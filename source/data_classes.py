@@ -1,45 +1,9 @@
-##################################
-##                              ##
-##           EXAMPLE            ##
-##                              ##
-##################################
-
-######## LOAD DATA
-import torch
-from torch_geometric.data import Data, DataLoader
-from torch_geometric.transforms import KNNGraph
-
-# Simulated point cloud data (points from two objects)
-points = torch.tensor([
-    [0.0, 0.0, 0.0], [0.1, 0.0, 0.0], [0.0, 0.1, 0.0],  # Object 1
-    [1.0, 1.0, 1.0], [1.1, 1.0, 1.0], [1.0, 1.1, 1.0]   # Object 2
-], dtype=torch.float)
-
-# Object IDs for each point
-object_ids = torch.tensor([0, 0, 0, 1, 1, 1], dtype=torch.long)
-
-# Create KNNGraph to define edges based on nearest neighbors
-transform = KNNGraph(k=2)
-data = Data(x=points, y=object_ids)
-data = transform(data)
-
-# Create DataLoader
-loader = DataLoader([data], batch_size=1)
-
-
-
-
-
-##################################
-##                              ##
-##             CODE             ##
-##                              ##
-##################################
-
-
-
 #  CREATE CLASS FOR LOADING AND PREPROCESSING DATASET
 
+# import libraries
+import torch
+from torch_geometric.data import Data, DataLoader
+from torch_geometric.transforms import Compose, NormalizeScale, RandomFlip, NormalizeFeatures, KNNGraph, RadiusGraph
 import pandas as pd
 import warnings
 import zipfile
@@ -52,6 +16,8 @@ from functools import reduce
 from collections import OrderedDict
 import random
 import os
+
+from utils import transform
 
 class DataProcesser:
     def __init__(self, archive_path, col_cloud='FOV', col_coor=['x_coordinate', 'y_coordinate', 'time_point'], col_box=['x_min', 'y_min', 'time_min', 'x_max', 'y_max', 'time_max'], groups=None, ftrain=.65, fvalidate=.20, ftest=.15, read_on_init=True, **kwargs):
@@ -71,6 +37,7 @@ class DataProcesser:
         self.train_set = None
         self.validation_set = None
         self.test_set = None
+
         self.nclouds = None
 
         self.logs = []
@@ -121,9 +88,14 @@ class DataProcesser:
         assert ftrain + fvalidate + ftest == 1, 'The set split does not add to 100%.'
 
         random.shuffle(self.nclouds)
-        self.train_set = self.nclouds[:int((len(self.nclouds)+1)*ftrain)]
-        self.validation_set = self.nclouds[int((len(self.nclouds)+1)*ftrain):int((len(self.nclouds)+1)*fvalidate)]
-        self.test_set = self.nclouds[int((len(self.nclouds)+1)*fvalidate):]
+        train_id = list(self.nclouds[:int((len(self.nclouds)+1)*ftrain)])
+        validation_id = list(self.nclouds[int((len(self.nclouds)+1)*ftrain):int((len(self.nclouds)+1)*fvalidate)])
+        test_id = list(self.nclouds[int((len(self.nclouds)+1)*fvalidate):])
+
+        self.train_set = self.dataset[self.dataset[self.col_cloud].isin(train_id)]
+        self.validation_set = self.dataset[self.dataset[self.col_cloud].isin(validation_id)]
+        self.test_set = self.dataset[self.dataset[self.col_cloud].isin(test_id)]
+
 ####TODO: PUT A CHECK TO SEE THAT NONE OF THE SUBSETS ARE EMPTY
         return None
 
@@ -196,7 +168,7 @@ class DataProcesser:
 class CloudDataset(Dataset):
     """Standard dataset object with ID, class"""
 
-    def __init__(self, dataset, knnradius, col_cloud='FOV', col_coor=['x_coordinate', 'y_coordinate', 'time_point'], col_box=['x_min', 'y_min', 'time_min', 'x_max', 'y_max', 'time_max'], groups=None):
+    def __init__(self, dataset, connection_method='knn', radius=2, col_cloud='FOV', col_coor=['x_coordinate', 'y_coordinate', 'time_point'], col_box=['x_min', 'y_min', 'time_min', 'x_max', 'y_max', 'time_max'], groups=None):
         """
         General Dataset class for arbitrary uni and multivariate point clouds.
         :param data_folder: folder where data files are stored
@@ -220,7 +192,9 @@ class CloudDataset(Dataset):
             self.detect_groups()
 
         #self.graph = None
-        self.knnradius = knnradius
+        self.connection_method = connection_method.upper()
+        assert self.connection_method in ['KNN', 'RADIUS'], 'The available methods to connect the points are \'knn\' and \'radius\''
+        self.radius = radius
 
         self.groups_indices = {}
         self.get_groups_indices()
@@ -242,7 +216,10 @@ class CloudDataset(Dataset):
 
 ####### TODO: introduce more graph connection methods
         # Convert to point cloud (=localized graph without edges)
-        connect_transform = KNNGraph(k=self.knnradius)
+        if self.connection_method == 'KNN':
+            connect_transform = KNNGraph(k=self.radius)
+        if self.connection_method == 'RADIUS':
+            connect_transform = RadiusGraph(r=self.radius)
         cloud = Data(x=node_features, pos=node_positions)
         cloud = connect_transform(cloud)
 
@@ -250,8 +227,7 @@ class CloudDataset(Dataset):
         boxes = self.boxes[self.boxes[self.col_cloud] == self.nclouds[i]][self.col_box]
         boxes = torch.FloatTensor(boxes)  # (n_objects, 6)
 
-        # Apply transformations to make everything in a normed coordinate scale (the measurement normalization is in the data loading)
-        cloud, boxes = transform(cloud, boxes, split=self.split)
+        cloud, boxes = transform(cloud, boxes, axis=2, p=0.5)
 
         return cloud, boxes
     
@@ -289,7 +265,7 @@ class CloudDataset(Dataset):
         return clouds, boxes  # tensor (N, 3, 300, 300), 3 lists of N tensors each
     
 
-    def normalize_meas(self, method='center', norm_per_meas=False):
+    def normalize_meas(self, method='zscore', norm_per_meas=False):
         """
         Normalize the measurements for each point
         :param: methods, 'center', 'zscore', 'minmaxscaling'
@@ -301,7 +277,7 @@ class CloudDataset(Dataset):
 
         assert method in methods, 'Invalid method, choose from: {0}'.format(methods)
 
-
+##### TODO: this can be done directly in a pg transform thing (NormalizeFeatures)
         ## standardize per group
         if norm_per_meas:
             mu = {g:[] for g in self.groups}

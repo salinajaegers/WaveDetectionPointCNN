@@ -1,58 +1,4 @@
-##################################
-##                              ##
-##           EXAMPLE            ##
-##                              ##
-##################################
-
-
-
-######## TRAINING
-import torch.optim as optim
-
-# Dummy ground truth bounding boxes for the objects
-# Format: (x, y, z, width, height, depth)
-gt_bboxes = torch.tensor([
-    [0.0, 0.0, 0.0, 0.2, 0.2, 0.2],  # Object 1
-    [1.0, 1.0, 1.0, 0.2, 0.2, 0.2]   # Object 2
-], dtype=torch.float)
-
-# Define loss function and optimizer
-criterion = torch.nn.MSELoss()  #### needs to be defined as in the tutorial to be calculated as the intersection
-optimizer = optim.Adam(model.parameters(), lr=0.01)   ##### good to use built in 
-##### optimizer = torch.optim.SGD(params=[{'params': biases, 'lr': 2 * lr}, {'params': not_biases}],
-#                                    lr=lr, momentum=momentum, weight_decay=weight_decay)
-
-
-
-# Training loop
-num_epochs = 10
-model.train()
-
-for epoch in range(num_epochs):
-    for data in loader:
-        optimizer.zero_grad()
-        output = model(data)
-        
-        # For simplicity, assuming data batch size is 1
-        loss = criterion(output, gt_bboxes)
-        
-        loss.backward()
-        optimizer.step()
-    
-    print(f'Epoch {epoch+1}, Loss: {loss.item()}')
-
-print("Training complete.")
-
-
-
-
-##################################
-##                              ##
-##             CODE             ##
-##                              ##
-##################################
-
-
+# import libraries
 import argparse
 import datetime
 import os
@@ -79,6 +25,7 @@ from torchsampler import ImbalancedDatasetSampler
 from torchvision import transforms
 
 
+# import custom libraries
 path_to_module = './source'  # Path where all the .py files are, relative to the notebook folder
 sys.path.append(path_to_module)
 from models import WavePrediction, MultiBoxLoss
@@ -139,7 +86,7 @@ def make_parser():
     parser.add_argument('--logdir', help='Path to directory where to store the logs and the models. Default: "./logs/"', type=str, default='./logs/')
     parser.add_argument('--seed', help='Seed random numbers for reproducibility. Default: 7.', type=int, default=7)
 
-#### TODO: PUT FTRAIN, ECT AND KNNRADIUS IN THE PARSER TOO
+#### TODO: PUT FTRAIN, ECT AND KNNRADIUS IN THE PARSER TOO, and also normalize_meas(method=args.method, norm_per_meas=args.norm_per_meas)
 
     # Add the flags of pytorch_lightning trainer
     parser = pl.Trainer.add_argparse_args(parser)
@@ -221,8 +168,9 @@ def load_data(args):
     data.split_data(ftrain=args.ftrain, fvalidate=args.fvalidate, ftest=args.ftest)
 
     # load the graph sets
-    data_train = myDataset(dataset=data.train_set)
-    data_validation = myDataset(dataset=data.validation_set, knnradius=args.knnradius)
+    data_train = CloudDataset(dataset=data.train_set, knnradius=args.knnradius).normalize_meas(method=args.method, norm_per_meas=args.norm_per_meas)
+    data_validation = CloudDataset(dataset=data.validation_set, knnradius=args.knnradius).normalize_meas(method=args.method, norm_per_meas=args.norm_per_meas)
+
 
     if args.batch > len(data_train) or args.batch > len(data_validation):
         raise ValueError('Batch size ({}) must be smaller than the number of clouds in the training ({}) and the validation ({}) sets.'.format(args.batch, len(data_train), len(data_validation)))
@@ -257,8 +205,8 @@ def load_data(args):
     return out
 
 
-
-def main(config_model, config_trainer, train_loader, validation_loader, file_model):
+#### TODO: figure out how tf the boxes should be loaded
+def train(config_model, config_trainer, train_loader, validation_loader, file_model):
     """
     Training. Initiate the model and start looping over epochs
     """
@@ -269,17 +217,14 @@ def main(config_model, config_trainer, train_loader, validation_loader, file_mod
     # Set costum loss criterion for the boxes 
 ###### TODO: NEEDS TO BE DONE DIRECTLY IN PL MODEL
     #criterion = MultiBoxLoss(priors_cxcy=model.priors_cxcy).to(device)
-
+    #optimizer
 
     # Calculate total number of epochs to train and the epochs to decay learning rate at (i.e. convert iterations to epochs)
     trainer = pl.Trainer(**config_trainer)
     trainer.fit(model, train_loader, validation_loader)
     torch.save(model, file_model)
 
-
-
-
-if __name__ == '__main__':
+def main():
     parser = make_parser()
     args = parser.parse_args()
     pl.utilities.seed.seed_everything(args.seed)
@@ -305,12 +250,7 @@ if __name__ == '__main__':
 
     # Update the defaults
     update_model = {}
-    if args.length is None:
-        update_model['length'] = max_common_length
-        print('Max common length detected: {}'.format(max_common_length))
-    if args.nclass is None:
-        update_model['nclass'] = nclass
-        print('Number of classes detected: {}'.format(nclass))
+    update_model['nmeasurement'] = n_groups
     if args.schedule is None:
         update_model['lr_scheduler_milestones'] = even_intervals(args.nepochs, ninterval=3)
     config_model.update(update_model)
@@ -324,8 +264,12 @@ if __name__ == '__main__':
     config_trainer.update(update_trainer)
 
     t0 = time.time()
-    main(config_model, config_trainer, train_loader, validation_loader, nmeasurement=len(measurement), file_model=file_model)
+    train(config_model, config_trainer, train_loader, validation_loader, nmeasurement=n_groups, file_model=file_model)
     t1 = time.time()
     print('Elapsed time: {:.2f} min'.format((t1 - t0)/60))
     print('Model saved at: {}'.format(file_model))
+    train()
+
+
+if __name__ == '__main__':
     main()
