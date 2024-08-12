@@ -226,10 +226,11 @@ class CloudDataset(Dataset):
         # Read objects in this image (bounding boxes, labels, difficulties)
         boxes = self.boxes[self.boxes[self.col_cloud] == self.nclouds[i]][self.col_box]
         boxes = torch.FloatTensor(boxes)  # (n_objects, 6)
-
+#### idk if this whole label thing works
         cloud, boxes = transform(cloud, boxes, axis=2, p=0.5)
+        labels = torch.LongTensor([1 for i in range(boxes.size(0))])
 
-        return cloud, boxes
+        return cloud, boxes, labels
     
     def detect_groups(self):
         colnames = list(self.dataset.columns.values)

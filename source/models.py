@@ -86,117 +86,250 @@ SAModule(0.5, 0.2, MLP([3, 64, 64, 128]))  ## nn=MLP([3, 64, 64, 128])
 
 
 
-import torch.nn.functional as F
+
 from torch_geometric.nn import PointNetConv
 from torch import nn
 from utils import *
-import torch.nn.functional as F
+
 from math import sqrt
 from itertools import product as product
 import torchvision
 
+
+
+
+
+import torch
+import torch.nn.functional as F
+from torch.nn import Linear as Lin
+
 import torch_geometric.transforms as T
 from torch_geometric.datasets import ModelNet
 from torch_geometric.loader import DataLoader
-from torch_geometric.nn import MLP, PointNetConv, fps, global_max_pool, radius
-
-
+from torch_geometric.nn import (
+    MLP,
+    PointTransformerConv,
+    fps,
+    global_mean_pool,
+    knn,
+    knn_graph,
+    knn_interpolate
+)
+from torch_geometric.typing import WITH_TORCH_CLUSTER
+from torch_geometric.utils import scatter
 
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-
-# base pointnet customizable layer
-class SAModule(torch.nn.Module):
-    def __init__(self, ratio, r, nn):
+############ FROM THE PYTORCH GEOMETRIC EXAMPLES #############################################
+# point transformer help functions from pytorch geometric example
+class TransformerBlock(torch.nn.Module):
+    def __init__(self, in_channels, out_channels):
         super().__init__()
-        self.ratio = ratio
-        self.r = r
-        self.conv = PointNetConv(nn, add_self_loops=False)
+        self.lin_in = Lin(in_channels, in_channels)
+        self.lin_out = Lin(out_channels, out_channels)
 
-    def forward(self, x, pos, batch):
-        idx = fps(pos, batch, ratio=self.ratio)
-        row, col = radius(pos, pos[idx], self.r, batch, batch[idx],
-                          max_num_neighbors=64)
-        edge_index = torch.stack([col, row], dim=0)
-        x_dst = None if x is None else x[idx]
-        x = self.conv((x, x_dst), (pos, pos[idx]), edge_index)
-        pos, batch = pos[idx], batch[idx]
-        return x, pos, batch
-# base global pooling layer
-class GlobalSAModule(torch.nn.Module):
-    def __init__(self, nn):
-        super().__init__()
-        self.nn = nn
+        self.pos_nn = MLP([3, 64, out_channels], norm=None, plain_last=False)
 
-    def forward(self, x, pos, batch):
-        x = self.nn(torch.cat([x, pos], dim=1))
-        x = global_max_pool(x, batch)
-        pos = pos.new_zeros((x.size(0), 3))
-        batch = torch.arange(x.size(0), device=batch.device)
-        return x, pos, batch
-# reverse layer / interpolation layer
-    ##### THIS IS PROBABLY NOT NEEDED, INSTED WE NEED FULLY CONNECTED LAYERS FOR BOX COORDINATES
-class FPModule(torch.nn.Module):
-    def __init__(self, k, nn):
+        self.attn_nn = MLP([out_channels, 64, out_channels], norm=None,
+                           plain_last=False)
+
+        self.transformer = PointTransformerConv(in_channels, out_channels,
+                                                pos_nn=self.pos_nn,
+                                                attn_nn=self.attn_nn)
+
+    def forward(self, x, pos, edge_index):
+        x = self.lin_in(x).relu()
+        x = self.transformer(x, pos, edge_index)
+        x = self.lin_out(x).relu()
+        return x
+
+class TransitionDown(torch.nn.Module):
+    """Samples the input point cloud by a ratio percentage to reduce
+    cardinality and uses an mlp to augment features dimensionnality.
+    """
+    def __init__(self, in_channels, out_channels, ratio=0.25, k=16):
         super().__init__()
         self.k = k
-        self.nn = nn
+        self.ratio = ratio
+        self.mlp = MLP([in_channels, out_channels], plain_last=False)
 
-    def forward(self, x, pos, batch, x_skip, pos_skip, batch_skip):
-        x = knn_interpolate(x, pos, pos_skip, batch, batch_skip, k=self.k)
-        if x_skip is not None:
-            x = torch.cat([x, x_skip], dim=1)
-        x = self.nn(x)
-        return x, pos_skip, batch_skip
+    def forward(self, x, pos, batch):
+        # FPS sampling
+        id_clusters = fps(pos, ratio=self.ratio, batch=batch)
+
+        # compute for each cluster the k nearest points
+        sub_batch = batch[id_clusters] if batch is not None else None
+
+        # beware of self loop
+        id_k_neighbor = knn(pos, pos[id_clusters], k=self.k, batch_x=batch,
+                            batch_y=sub_batch)
+
+        # transformation of features through a simple MLP
+        x = self.mlp(x)
+
+        # Max pool onto each cluster the features from knn in points
+        x_out = scatter(x[id_k_neighbor[1]], id_k_neighbor[0], dim=0,
+                        dim_size=id_clusters.size(0), reduce='max')
+
+        # keep only the clusters and their max-pooled features
+        sub_pos, out = pos[id_clusters], x_out
+        return out, sub_pos, sub_batch
+    
+class TransitionUp(torch.nn.Module):
+    """Reduce features dimensionality and interpolate back to higher
+    resolution and cardinality.
+    """
+    def __init__(self, in_channels, out_channels):
+        super().__init__()
+        self.mlp_sub = MLP([in_channels, out_channels], plain_last=False)
+        self.mlp = MLP([out_channels, out_channels], plain_last=False)
+
+    def forward(self, x, x_sub, pos, pos_sub, batch=None, batch_sub=None):
+        # transform low-res features and reduce the number of features
+        x_sub = self.mlp_sub(x_sub)
+
+        # interpolate low-res feats to high-res points
+        x_interpolated = knn_interpolate(x_sub, pos_sub, pos, k=3,
+                                         batch_x=batch_sub, batch_y=batch)
+
+        x = self.mlp(x) + x_interpolated
+
+        return x
+    
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+################################ MAIN HELPER MODELS #############################################
 
 # base convolution model
 class BaseModel(torch.nn.Module):
-    def __init__(self):
-        super(ObjectDetectionNet, self).__init__()
+    def __init__(self, nmeasurements, k=16):
+        super().__init__()
+        self.k = k
 
-        # Define the number of input channels (features per node) and the MLP
-        in_channels = 16
-        num_point_features = 3
-        
-        # Define local and global MLPs for the PointNetConv layer
-        local_nn = torch.nn.Sequential(
-            torch.nn.Linear(in_channels + num_point_features, 64),
-            torch.nn.ReLU(),
-            torch.nn.Linear(64, 64)
-        )
-        
-        global_nn = torch.nn.Sequential(
-            torch.nn.Linear(64, 64),
-            torch.nn.ReLU(),
-            torch.nn.Linear(64, 128)
-        )
-        
-        # Instantiate the PointNetConv layer
-        conv = PointNetConv(local_nn=local_nn, global_nn=global_nn)
+        # initial block
+# not sure about the input for the mlp
+        self.mlp_input = MLP([nmeasurements, 32], plain_last=False)
+        self.transformer_input = TransformerBlock(in_channels=32,
+                                                  out_channels=32)
 
-        self.conv1 = PointNetConv(in_channels=3, mlp=[8, 16])
-        self.conv2 = PointNetConv(in_channels=16, mlp=[32, 64])
-        self.fc = torch.nn.Linear(64, 6)  # 6 outputs for 3D bounding box (x, y, z, width, height, depth)
+        # down and transformer layers
+        self.down_1 = TransitionDown(in_channels=32, out_channels=64, k=self.k)
+        self.transformer_1 = TransformerBlock(in_channels=64, out_channels=64)
+
+        self.down_2 = TransitionDown(in_channels=64, out_channels=128, k=self.k)
+        self.transformer_2 = TransformerBlock(in_channels=128, out_channels=128)
+
+        self.down_3 = TransitionDown(in_channels=128, out_channels=256, k=self.k)
+        self.transformer_3 = TransformerBlock(in_channels=256, out_channels=256)
+
+        self.down_4 = TransitionDown(in_channels=256, out_channels=512, k=self.k)
+        self.transformer_4 = TransformerBlock(in_channels=512, out_channels=512)
+
+        self.down_5 = TransitionDown(in_channels=512, out_channels=1024, k=self.k)
+        self.transformer_5 = TransformerBlock(in_channels=1024, out_channels=1024)
+
+    def forward(self, x, pos, batch=None):
+
+        # add dummy features in case there is none
+        if x is None:
+            x = torch.ones((pos.shape[0], 1), device=pos.get_device())
+
+        # first block
+        x = self.mlp_input(x)
+##### WHY DO WE REDO THE EDGE INDEX??????
+        edge_index = knn_graph(pos, k=self.k, batch=batch)
+        x = self.transformer_input(x, pos, edge_index)
+
+        # base
+        x, pos, batch = self.down_1(x, pos, batch=batch)
+        edge_index = knn_graph(pos, k=self.k, batch=batch)
+        x = self.transformer_1(x, pos, edge_index)
+
+        x, pos, batch = self.down_2(x, pos, batch=batch)
+        edge_index = knn_graph(pos, k=self.k, batch=batch)
+        x = self.transformer_2(x, pos, edge_index)
+
+        x, pos, batch = self.down_3(x, pos, batch=batch)
+        edge_index = knn_graph(pos, k=self.k, batch=batch)
+        x = self.transformer_3(x, pos, edge_index)
+        transform_4_feats = x
+
+        x, pos, batch = self.down_4(x, pos, batch=batch)
+        edge_index = knn_graph(pos, k=self.k, batch=batch)
+        transform_5_feats = self.transformer_4(x, pos, edge_index)
+
+        return transform_4_feats, transform_5_feats
     
-    def forward(self, data):
-        x, edge_index = data.x, data.edge_index
-        
-        # PointNetConv layers
-        x = self.conv1(x, edge_index)
-        x = F.relu(x)
-        x = self.conv2(x, edge_index)
-        x = F.relu(x)
-        
-        # Global max pooling
-        x = torch.nn.functional.global_max_pool(x, data.batch)
-        
-        # Fully connected layer to predict bounding box
-        out = self.fc(x)
-        return out
+
+# auxiliary convolution model
+class AuxiliaryModel(torch.nn.Module):
+    def __init__(self, k=16):
+        super().__init__()
+        self.k = k
+
+        # down and transformer layers
+        self.down_6 = TransitionUp(in_channels=1047, out_channels=512, k=self.k)
+        self.transformer_6 = TransformerBlock(in_channels=512, out_channels=512)
+
+        self.down_7 = TransitionUp(in_channels=512, out_channels=256, k=self.k)
+        self.transformer_7 = TransformerBlock(in_channels=256, out_channels=256)
+
+        self.down_8 = TransitionUp(in_channels=256, out_channels=256, k=self.k)
+        self.transformer_8 = TransformerBlock(in_channels=256, out_channels=256)
+
+        self.down_9 = TransitionUp(in_channels=256, out_channels=128, k=self.k)
+        self.transformer_9 = TransformerBlock(in_channels=128, out_channels=128)
+
+        # Initialize convolutions' parameters
+        self.init_param()
+
+    def init_param(self):
+        """
+        Initialize convolution parameters.
+        """
+        for c in self.children():
+            if isinstance(c, nn.Conv2d):
+                nn.init.xavier_uniform_(c.weight)
+                nn.init.constant_(c.bias, 0.)
+
+    def forward(self, transform_5_feats, pos, batch=None):
+
+        # base
+        x, pos, batch = self.down_6(transform_5_feats, pos, batch=batch)
+        edge_index = knn_graph(pos, k=self.k, batch=batch)
+        x = self.transformer_6(x, pos, edge_index)
+        transform_6_feats = x
+
+        x, pos, batch = self.down_7(x, pos, batch=batch)
+        edge_index = knn_graph(pos, k=self.k, batch=batch)
+        x = self.transformer_7(x, pos, edge_index)
+        transform_7_feats = x
+
+        x, pos, batch = self.down_8(x, pos, batch=batch)
+        edge_index = knn_graph(pos, k=self.k, batch=batch)
+        x = self.transformer_8(x, pos, edge_index)
+        transform_8_feats = x
+
+        x, pos, batch = self.down_9(x, pos, batch=batch)
+        edge_index = knn_graph(pos, k=self.k, batch=batch)
+        x = self.transformer_9(x, pos, edge_index)
+        transform_9_feats = x
+
+        return transform_6_feats, transform_7_feats, transform_8_feats, transform_9_feats
 
 
 
@@ -216,17 +349,17 @@ class PredictionConvolutions(nn.Module):
         """
         :param n_classes: number of different types of objects
         """
-        super(PredictionConvolutions, self).__init__()
+        super().__init__()
 
         self.n_classes = n_classes
 
         # Number of prior-boxes we are considering per position in each feature map
-        n_boxes = {'conv4_3': 4,
-                   'conv7': 6,
-                   'conv8_2': 6,
-                   'conv9_2': 6,
-                   'conv10_2': 4,
-                   'conv11_2': 4}
+        n_boxes = {'transform_4_feats': 4,
+                   'transform_5_feats': 6,
+                   'transform_6_feats': 6,
+                   'transform_7_feats': 6,
+                   'transform_8_feat': 4,
+                   'transform_9_feats': 4}
         # 4 prior-boxes implies we use 4 different aspect ratios, etc.
 
         # Localization prediction convolutions (predict offsets w.r.t prior-boxes)
@@ -246,9 +379,9 @@ class PredictionConvolutions(nn.Module):
         self.cl_conv11_2 = nn.Conv2d(256, n_boxes['conv11_2'] * n_classes, kernel_size=3, padding=1)
 
         # Initialize convolutions' parameters
-        self.init_conv2d()
+        self.init_param()
 
-    def init_conv2d(self):
+    def init_param(self):
         """
         Initialize convolution parameters.
         """
@@ -343,7 +476,7 @@ class PredictionConvolutions(nn.Module):
 
 
 
-
+################################ MAIN MODEL #####################################################
 # put both together in a network
 class WavePrediction(nn.Module):
     """
@@ -564,7 +697,7 @@ class WavePrediction(nn.Module):
 
 
 
-
+################################ LOSS FUNCTION #######################################################
 # Loss module to calculate box accuracy
 class MultiBoxLoss(nn.Module):
     """
@@ -575,14 +708,14 @@ class MultiBoxLoss(nn.Module):
     (2) a confidence loss for the predicted class scores.
     """
 
-    def __init__(self, priors_cxcy, threshold=0.5, neg_pos_ratio=3, alpha=1.):
+    def __init__(self, priors_xy, threshold=0.5, neg_pos_ratio=3, alpha=1.):
         super(MultiBoxLoss, self).__init__()
-        self.priors_cxcy = priors_cxcy
-        self.priors_xy = cxcy_to_xy(priors_cxcy)
+        self.priors_xy = priors_xy
         self.threshold = threshold
         self.neg_pos_ratio = neg_pos_ratio
         self.alpha = alpha
 
+###### TODO: maybe choose different loss functions???
         self.smooth_l1 = nn.L1Loss()  # *smooth* L1 loss in the paper; see Remarks section in the tutorial
         self.cross_entropy = nn.CrossEntropyLoss(reduce=False)
 
@@ -602,17 +735,23 @@ class MultiBoxLoss(nn.Module):
 
         assert n_priors == predicted_locs.size(1) == predicted_scores.size(1)
 
-        true_locs = torch.zeros((batch_size, n_priors, 4), dtype=torch.float).to(device)  # (N, 8732, 4)
+        true_locs = torch.zeros((batch_size, n_priors, 6), dtype=torch.float).to(device)  # (N, 8732, 4)
         true_classes = torch.zeros((batch_size, n_priors), dtype=torch.long).to(device)  # (N, 8732)
+        
+
+#### TOO CONFUSED WITH THE INDEXES
 
         # For each image
         for i in range(batch_size):
             n_objects = boxes[i].size(0)
+            #labels = torch.zeros((batch_size, n_objects), dtype=torch.long).to(device)
 
+###### TODO: make jaccard overlap function for graph
             overlap = find_jaccard_overlap(boxes[i],
-                                           self.priors_xy)  # (n_objects, 8732)
+                                           self.priors_xy)  # (n_objects, 8732)         # (n_objects, n_priors)
 
             # For each prior, find the object that has the maximum overlap
+            # output: (max, max_indices)
             overlap_for_each_prior, object_for_each_prior = overlap.max(dim=0)  # (8732)
 
             # We don't want a situation where an object is not represented in our positive (non-background) priors -
@@ -625,11 +764,13 @@ class MultiBoxLoss(nn.Module):
 
             # Then, assign each object to the corresponding maximum-overlap-prior. (This fixes 1.)
             object_for_each_prior[prior_for_each_object] = torch.LongTensor(range(n_objects)).to(device)
+            # reassignes the corresponding object index to each prior that was voted best for that object
 
             # To ensure these priors qualify, artificially give them an overlap of greater than 0.5. (This fixes 2.)
             overlap_for_each_prior[prior_for_each_object] = 1.
 
             # Labels for each prior
+            #labels = torch.ones(object_for_each_prior.size(0))
             label_for_each_prior = labels[i][object_for_each_prior]  # (8732)
             # Set priors whose overlaps with objects are less than the threshold to be background (no object)
             label_for_each_prior[overlap_for_each_prior < self.threshold] = 0  # (8732)
@@ -638,11 +779,14 @@ class MultiBoxLoss(nn.Module):
             true_classes[i] = label_for_each_prior
 
             # Encode center-size object coordinates into the form we regressed predicted boxes to
+####### TODO: figure out what the output format of the model will be for the boxes and change it
             true_locs[i] = cxcy_to_gcxgcy(xy_to_cxcy(boxes[i][object_for_each_prior]), self.priors_cxcy)  # (8732, 4)
 
         # Identify priors that are positive (object/non-background)
         positive_priors = true_classes != 0  # (N, 8732)
 
+
+###### TODO: understand this whole part (but it should probably work)
         # LOCALIZATION LOSS
 
         # Localization loss is computed only over positive (non-background) priors
