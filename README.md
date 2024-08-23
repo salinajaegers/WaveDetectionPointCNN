@@ -1,6 +1,6 @@
-### Point/Graph CNN for Wave Detection in Cell Signalling Dynamics
+# Point/Graph CNN for Wave Detection in Cell Signalling Dynamics
 
-## Input format:
+### Input format:
 The point cloud of cells has the dimensions:
 * x - xcoordinate in image
 * y - time points
