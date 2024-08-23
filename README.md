@@ -1,10 +1,10 @@
 ### Point/Graph CNN for Wave Detection in Cell Signalling Dynamics
 
 ## Input format:
-The point cloud of cells has the dimensions: \\
-        x - xcoordinate in image \\
-        y - time points \\
-        z - ycoordinate in image \\
+The point cloud of cells has the dimensions:
+* x - xcoordinate in image
+* y - time points
+* z - ycoordinate in image 
 
 Two files need to be passed to the GNN:
 - 'boxes.csv': In this file are the annotated boxes for the training. The format is
