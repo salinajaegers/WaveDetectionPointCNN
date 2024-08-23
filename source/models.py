@@ -1,108 +1,6 @@
-##################################
-##                              ##
-##           EXAMPLE            ##
-##                              ##
-##################################
-
-
-###### THE MODEL 
-import torch.nn.functional as F
-from torch_geometric.nn import PointNetConv
-
-class ObjectDetectionNet(torch.nn.Module):
-    def __init__(self):
-        super(ObjectDetectionNet, self).__init__()
-        self.conv1 = PointNetConv(in_channels=3, mlp=[8, 16])
-        self.conv2 = PointNetConv(in_channels=16, mlp=[32, 64])
-        self.fc = torch.nn.Linear(64, 6)  # 6 outputs for 3D bounding box (x, y, z, width, height, depth)
-    
-    def forward(self, data):
-        x, edge_index = data.x, data.edge_index
-        
-        # PointNetConv layers
-        x = self.conv1(x, edge_index)
-        x = F.relu(x)
-        x = self.conv2(x, edge_index)
-        x = F.relu(x)
-        
-        # Global max pooling
-        x = torch.nn.functional.global_max_pool(x, data.batch)
-        
-        # Fully connected layer to predict bounding box
-        out = self.fc(x)
-        return out
-
-# Instantiate the network
-model = ObjectDetectionNet()
-
-
-
-##### HOW THE POINTNETLAYERS WORK
-import torch
-from torch_geometric.nn import PointNetConv
-
-# Define the number of input channels (features per node) and the MLP
-in_channels = 16
-num_point_features = 3
-
-# Define local and global MLPs for the PointNetConv layer
-local_nn = torch.nn.Sequential(
-    torch.nn.Linear(in_channels + num_point_features, 64),
-    torch.nn.ReLU(),
-    torch.nn.Linear(64, 64)
-)
-
-global_nn = torch.nn.Sequential(
-    torch.nn.Linear(64, 64),
-    torch.nn.ReLU(),
-    torch.nn.Linear(64, 128)
-)
-
-# Instantiate the PointNetConv layer
-conv = PointNetConv(local_nn=local_nn, global_nn=global_nn)
-
-# Create some sample data
-num_nodes = 10
-num_edges = 15
-x = torch.randn((num_nodes, in_channels))  # Node features
-pos = torch.randn((num_nodes, num_point_features))  # Node positions
-edge_index = torch.randint(0, num_nodes, (2, num_edges))  # Edges
-
-# Perform the forward pass
-output = conv(x, pos, edge_index)
-
-##### ANOTHER EXAMPLE HERE
-#https://github.com/pyg-team/pytorch_geometric/blob/master/examples/pointnet2_classification.py#L52
-
-self.conv = PointNetConv(nn, add_self_loops=False)
-SAModule(0.5, 0.2, MLP([3, 64, 64, 128]))  ## nn=MLP([3, 64, 64, 128])
-
-
-##################################
-##                              ##
-##             CODE             ##
-##                              ##
-##################################
-
-
-
-
-from torch_geometric.nn import PointNetConv
-from torch import nn
-from utils import *
-
-from math import sqrt
-from itertools import product as product
-import torchvision
-
-
-
-
-
 import torch
 import torch.nn.functional as F
 from torch.nn import Linear as Lin
-
 import torch_geometric.transforms as T
 from torch_geometric.datasets import ModelNet
 from torch_geometric.loader import DataLoader
@@ -115,11 +13,23 @@ from torch_geometric.nn import (
     knn_graph,
     knn_interpolate
 )
-from torch_geometric.typing import WITH_TORCH_CLUSTER
 from torch_geometric.utils import scatter
+import torch.nn as nn
+import pytorch_lightning as pl
+import torchmetrics
+import torchvision
 
 
+import seaborn as sns
+import matplotlib.pyplot as plt
+import pandas as pd
+from math import sqrt
+from itertools import product as product
 
+from utils import *
+
+
+# Set CPU/CUDA device based on availability
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 ############ FROM THE PYTORCH GEOMETRIC EXAMPLES #############################################
@@ -148,6 +58,11 @@ class TransformerBlock(torch.nn.Module):
 class TransitionDown(torch.nn.Module):
     """Samples the input point cloud by a ratio percentage to reduce
     cardinality and uses an mlp to augment features dimensionnality.
+
+
+
+    REDUCE POINTS IN THE GRAPH TO A CERTAIN RATIO GIVEN BY SELF.RATIO.
+    SO IF WE START WITH 10 POINTS WE REDUCE IT TO 5 IF WE CHOOSE RATIO=0.5
     """
     def __init__(self, in_channels, out_channels, ratio=0.25, k=16):
         super().__init__()
@@ -178,8 +93,12 @@ class TransitionDown(torch.nn.Module):
         return out, sub_pos, sub_batch
     
 class TransitionUp(torch.nn.Module):
-    """Reduce features dimensionality and interpolate back to higher
+    """
+    Reduce features dimensionality and interpolate back to higher
     resolution and cardinality.
+
+
+    INTERPOLATE THE REDUCED NODE FEATURES BACK TO THE PREVIOUSLY POOLED NODES.
     """
     def __init__(self, in_channels, out_channels):
         super().__init__()
@@ -226,21 +145,24 @@ class BaseModel(torch.nn.Module):
         self.transformer_input = TransformerBlock(in_channels=32,
                                                   out_channels=32)
 
-        # down and transformer layers
-        self.down_1 = TransitionDown(in_channels=32, out_channels=64, k=self.k)
-        self.transformer_1 = TransformerBlock(in_channels=64, out_channels=64)
+        # backbone layers
+        self.transformers_down = torch.nn.ModuleList()
+        self.transition_down = torch.nn.ModuleList()
 
-        self.down_2 = TransitionDown(in_channels=64, out_channels=128, k=self.k)
-        self.transformer_2 = TransformerBlock(in_channels=128, out_channels=128)
+        dim_model_down = [32, 64, 128, 256, 256, 512, 1024]
+        
+        for i in range(0, len(dim_model_down) - 1):
+            # Add Transition Down block followed by a Point Transformer block
+            self.transition_down.append(
+                TransitionDown(in_channels=dim_model_down[i],
+                               out_channels=dim_model_down[i + 1], k=self.k))
 
-        self.down_3 = TransitionDown(in_channels=128, out_channels=256, k=self.k)
-        self.transformer_3 = TransformerBlock(in_channels=256, out_channels=256)
+            self.transformers_down.append(
+                TransformerBlock(in_channels=dim_model_down[i + 1],
+                                 out_channels=dim_model_down[i + 1]))
 
-        self.down_4 = TransitionDown(in_channels=256, out_channels=512, k=self.k)
-        self.transformer_4 = TransformerBlock(in_channels=512, out_channels=512)
 
-        self.down_5 = TransitionDown(in_channels=512, out_channels=1024, k=self.k)
-        self.transformer_5 = TransformerBlock(in_channels=1024, out_channels=1024)
+
 
     def forward(self, x, pos, batch=None):
 
@@ -248,93 +170,41 @@ class BaseModel(torch.nn.Module):
         if x is None:
             x = torch.ones((pos.shape[0], 1), device=pos.get_device())
 
+        out_x = []
+        out_pos = []
+        out_batch = []
+
         # first block
         x = self.mlp_input(x)
 ##### WHY DO WE REDO THE EDGE INDEX??????
         edge_index = knn_graph(pos, k=self.k, batch=batch)
         x = self.transformer_input(x, pos, edge_index)
 
-        # base
-        x, pos, batch = self.down_1(x, pos, batch=batch)
-        edge_index = knn_graph(pos, k=self.k, batch=batch)
-        x = self.transformer_1(x, pos, edge_index)
+        # save outputs for skipping connections
+        out_x.append(x)
+        out_pos.append(pos)
+        out_batch.append(batch)
 
-        x, pos, batch = self.down_2(x, pos, batch=batch)
-        edge_index = knn_graph(pos, k=self.k, batch=batch)
-        x = self.transformer_2(x, pos, edge_index)
 
-        x, pos, batch = self.down_3(x, pos, batch=batch)
-        edge_index = knn_graph(pos, k=self.k, batch=batch)
-        x = self.transformer_3(x, pos, edge_index)
-        transform_4_feats = x
+# backbone down : #reduce cardinality and augment dimensionnality
+        for i in range(len(self.transformers_down)):
+            x, pos, batch = self.transition_down[i](x, pos, batch=batch)
+            edge_index = knn_graph(pos, k=self.k, batch=batch)
+            x = self.transformers_down[i](x, pos, edge_index)
 
-        x, pos, batch = self.down_4(x, pos, batch=batch)
-        edge_index = knn_graph(pos, k=self.k, batch=batch)
-        transform_5_feats = self.transformer_4(x, pos, edge_index)
+            out_x.append(x)
+            out_pos.append(pos)
+            out_batch.append(batch)
+          
 
-        return transform_4_feats, transform_5_feats
+        return out_x, out_pos, out_batch
     
 
-# auxiliary convolution model
-class AuxiliaryModel(torch.nn.Module):
-    def __init__(self, k=16):
-        super().__init__()
-        self.k = k
-
-        # down and transformer layers
-        self.down_6 = TransitionUp(in_channels=1047, out_channels=512, k=self.k)
-        self.transformer_6 = TransformerBlock(in_channels=512, out_channels=512)
-
-        self.down_7 = TransitionUp(in_channels=512, out_channels=256, k=self.k)
-        self.transformer_7 = TransformerBlock(in_channels=256, out_channels=256)
-
-        self.down_8 = TransitionUp(in_channels=256, out_channels=256, k=self.k)
-        self.transformer_8 = TransformerBlock(in_channels=256, out_channels=256)
-
-        self.down_9 = TransitionUp(in_channels=256, out_channels=128, k=self.k)
-        self.transformer_9 = TransformerBlock(in_channels=128, out_channels=128)
-
-        # Initialize convolutions' parameters
-        self.init_param()
-
-    def init_param(self):
-        """
-        Initialize convolution parameters.
-        """
-        for c in self.children():
-            if isinstance(c, nn.Conv2d):
-                nn.init.xavier_uniform_(c.weight)
-                nn.init.constant_(c.bias, 0.)
-
-    def forward(self, transform_5_feats, pos, batch=None):
-
-        # base
-        x, pos, batch = self.down_6(transform_5_feats, pos, batch=batch)
-        edge_index = knn_graph(pos, k=self.k, batch=batch)
-        x = self.transformer_6(x, pos, edge_index)
-        transform_6_feats = x
-
-        x, pos, batch = self.down_7(x, pos, batch=batch)
-        edge_index = knn_graph(pos, k=self.k, batch=batch)
-        x = self.transformer_7(x, pos, edge_index)
-        transform_7_feats = x
-
-        x, pos, batch = self.down_8(x, pos, batch=batch)
-        edge_index = knn_graph(pos, k=self.k, batch=batch)
-        x = self.transformer_8(x, pos, edge_index)
-        transform_8_feats = x
-
-        x, pos, batch = self.down_9(x, pos, batch=batch)
-        edge_index = knn_graph(pos, k=self.k, batch=batch)
-        x = self.transformer_9(x, pos, edge_index)
-        transform_9_feats = x
-
-        return transform_6_feats, transform_7_feats, transform_8_feats, transform_9_feats
 
 
 
 # prediction convolution model
-class PredictionConvolutions(nn.Module):
+class PredictionModel(nn.Module):
     """
     Convolutions to predict class scores and bounding boxes using lower and higher-level feature maps.
 
@@ -357,40 +227,40 @@ class PredictionConvolutions(nn.Module):
         n_boxes = {'transform_4_feats': 4,
                    'transform_5_feats': 6,
                    'transform_6_feats': 6,
-                   'transform_7_feats': 6,
-                   'transform_8_feat': 4,
-                   'transform_9_feats': 4}
+                   'transform_7_feats': 6}
+        
+        box_dim = 9
         # 4 prior-boxes implies we use 4 different aspect ratios, etc.
 
+
+        #dim_model_down = [32, 64, 128, 128, 256, 512, 1024]
         # Localization prediction convolutions (predict offsets w.r.t prior-boxes)
-        self.loc_conv4_3 = nn.Conv2d(512, n_boxes['conv4_3'] * 4, kernel_size=3, padding=1)
-        self.loc_conv7 = nn.Conv2d(1024, n_boxes['conv7'] * 4, kernel_size=3, padding=1)
-        self.loc_conv8_2 = nn.Conv2d(512, n_boxes['conv8_2'] * 4, kernel_size=3, padding=1)
-        self.loc_conv9_2 = nn.Conv2d(256, n_boxes['conv9_2'] * 4, kernel_size=3, padding=1)
-        self.loc_conv10_2 = nn.Conv2d(256, n_boxes['conv10_2'] * 4, kernel_size=3, padding=1)
-        self.loc_conv11_2 = nn.Conv2d(256, n_boxes['conv11_2'] * 4, kernel_size=3, padding=1)
+        #MLP([in_channels, out_channels], plain_last=False)
+        self.loc_mlp4 = MLP([128, n_boxes['transform_4_feats'] * box_dim], plain_last=False)
+        self.loc_mlp5 = MLP([256, n_boxes['transform_5_feats'] * box_dim], plain_last=False)
+        self.loc_mlp6 = MLP([512, n_boxes['transform_6_feats'] * box_dim], plain_last=False)
+        self.loc_mlp7 = MLP([1024, n_boxes['transform_7_feats'] * box_dim], plain_last=False)
 
         # Class prediction convolutions (predict classes in localization boxes)
-        self.cl_conv4_3 = nn.Conv2d(512, n_boxes['conv4_3'] * n_classes, kernel_size=3, padding=1)
-        self.cl_conv7 = nn.Conv2d(1024, n_boxes['conv7'] * n_classes, kernel_size=3, padding=1)
-        self.cl_conv8_2 = nn.Conv2d(512, n_boxes['conv8_2'] * n_classes, kernel_size=3, padding=1)
-        self.cl_conv9_2 = nn.Conv2d(256, n_boxes['conv9_2'] * n_classes, kernel_size=3, padding=1)
-        self.cl_conv10_2 = nn.Conv2d(256, n_boxes['conv10_2'] * n_classes, kernel_size=3, padding=1)
-        self.cl_conv11_2 = nn.Conv2d(256, n_boxes['conv11_2'] * n_classes, kernel_size=3, padding=1)
+        self.cl_mlp4 = MLP([128, n_boxes['transform_4_feats'] * n_classes], plain_last=False)
+        self.cl_mlp5 = MLP([256, n_boxes['transform_5_feats'] * n_classes], plain_last=False)
+        self.cl_mlp6 = MLP([512, n_boxes['transform_6_feats'] * n_classes], plain_last=False)
+        self.cl_mlp7 = MLP([1024, n_boxes['transform_7_feats'] * n_classes], plain_last=False)
+
 
         # Initialize convolutions' parameters
         self.init_param()
 
     def init_param(self):
         """
-        Initialize convolution parameters.
+        Initialize convolution parameters from model applied before this.
         """
         for c in self.children():
             if isinstance(c, nn.Conv2d):
                 nn.init.xavier_uniform_(c.weight)
                 nn.init.constant_(c.bias, 0.)
 
-    def forward(self, conv4_3_feats, conv7_feats, conv8_2_feats, conv9_2_feats, conv10_2_feats, conv11_2_feats):
+    def forward(self, out_x, out_pos, out_batch):
         """
         Forward propagation.
 
@@ -402,74 +272,85 @@ class PredictionConvolutions(nn.Module):
         :param conv11_2_feats: conv11_2 feature map, a tensor of dimensions (N, 256, 1, 1)
         :return: 8732 locations and class scores (i.e. w.r.t each prior box) for each image
         """
-        batch_size = conv4_3_feats.size(0)
+        batch_size = transform_4_feats.size(0)
 
+##### TODO: check if the order of the prior box coordinates is right
+### This might be different dimension wise since the point clouds do not have the same amount of points 
+### We will see if this has an effect tho (hope not)
         # Predict localization boxes' bounds (as offsets w.r.t prior-boxes)
-        l_conv4_3 = self.loc_conv4_3(conv4_3_feats)  # (N, 16, 38, 38)
-        l_conv4_3 = l_conv4_3.permute(0, 2, 3,
-                                      1).contiguous()  # (N, 38, 38, 16), to match prior-box order (after .view())
+        print('THE SHAPE OF THE TRANSFOMS ARE: ' + str(transform_4_feats.shape))
+        l_mlp4 = self.loc_mlp4(transform_4_feats)  # (N, 16, 38, 38)
+        print('THE SHAPE OF THE TRANSFOMS ARE: ' + str(l_mlp4.shape))
+        l_mlp4 = l_mlp4.permute(0, 2, 3, 1).contiguous()  # (N, 38, 38, 16), to match prior-box order (after .view())
         # (.contiguous() ensures it is stored in a contiguous chunk of memory, needed for .view() below)
-        l_conv4_3 = l_conv4_3.view(batch_size, -1, 4)  # (N, 5776, 4), there are a total 5776 boxes on this feature map
+        l_mlp4 = l_mlp4.view(batch_size, -1, 4)  # (N, 5776, 4), there are a total 5776 boxes on this feature map
 
-        l_conv7 = self.loc_conv7(conv7_feats)  # (N, 24, 19, 19)
-        l_conv7 = l_conv7.permute(0, 2, 3, 1).contiguous()  # (N, 19, 19, 24)
-        l_conv7 = l_conv7.view(batch_size, -1, 4)  # (N, 2166, 4), there are a total 2116 boxes on this feature map
+        l_mlp5 = self.loc_mlp5(transform_5_feats)  # (N, 24, 19, 19)
+        print('THE SHAPE OF THE TRANSFOMS ARE: ' + str(l_mlp5.shape))
+        l_mlp5 = l_mlp5.permute(0, 2, 3, 1).contiguous()  # (N, 19, 19, 24)
+        l_mlp5 = l_mlp5.view(batch_size, -1, 4)  # (N, 2166, 4), there are a total 2116 boxes on this feature map
 
-        l_conv8_2 = self.loc_conv8_2(conv8_2_feats)  # (N, 24, 10, 10)
-        l_conv8_2 = l_conv8_2.permute(0, 2, 3, 1).contiguous()  # (N, 10, 10, 24)
-        l_conv8_2 = l_conv8_2.view(batch_size, -1, 4)  # (N, 600, 4)
+        l_mlp6 = self.loc_mlp6(transform_6_feats)  # (N, 24, 10, 10)
+        l_mlp6 = l_mlp6.permute(0, 2, 3, 1).contiguous()  # (N, 10, 10, 24)
+        l_mlp6 = l_mlp6.view(batch_size, -1, 4)  # (N, 600, 4)
 
-        l_conv9_2 = self.loc_conv9_2(conv9_2_feats)  # (N, 24, 5, 5)
-        l_conv9_2 = l_conv9_2.permute(0, 2, 3, 1).contiguous()  # (N, 5, 5, 24)
-        l_conv9_2 = l_conv9_2.view(batch_size, -1, 4)  # (N, 150, 4)
+        l_mlp7 = self.loc_mlp7(transform_7_feats)  # (N, 24, 5, 5)
+        l_mlp7 = l_mlp7.permute(0, 2, 3, 1).contiguous()  # (N, 5, 5, 24)
+        l_mlp7 = l_mlp7.view(batch_size, -1, 4)  # (N, 150, 4)
 
-        l_conv10_2 = self.loc_conv10_2(conv10_2_feats)  # (N, 16, 3, 3)
-        l_conv10_2 = l_conv10_2.permute(0, 2, 3, 1).contiguous()  # (N, 3, 3, 16)
-        l_conv10_2 = l_conv10_2.view(batch_size, -1, 4)  # (N, 36, 4)
 
-        l_conv11_2 = self.loc_conv11_2(conv11_2_feats)  # (N, 16, 1, 1)
-        l_conv11_2 = l_conv11_2.permute(0, 2, 3, 1).contiguous()  # (N, 1, 1, 16)
-        l_conv11_2 = l_conv11_2.view(batch_size, -1, 4)  # (N, 4, 4)
+
+
 
         # Predict classes in localization boxes
-        c_conv4_3 = self.cl_conv4_3(conv4_3_feats)  # (N, 4 * n_classes, 38, 38)
-        c_conv4_3 = c_conv4_3.permute(0, 2, 3,
-                                      1).contiguous()  # (N, 38, 38, 4 * n_classes), to match prior-box order (after .view())
-        c_conv4_3 = c_conv4_3.view(batch_size, -1,
-                                   self.n_classes)  # (N, 5776, n_classes), there are a total 5776 boxes on this feature map
+        c_mlp4 = self.cl_mlp4(transform_4_feats)  # (N, 4 * n_classes, 38, 38)
+        c_mlp4 = c_mlp4.permute(0, 2, 3, 1).contiguous()  # (N, 38, 38, 4 * n_classes), to match prior-box order (after .view())
+        c_mlp4 = c_mlp4.view(batch_size, -1, self.n_classes)  # (N, 5776, n_classes), there are a total 5776 boxes on this feature map
 
-        c_conv7 = self.cl_conv7(conv7_feats)  # (N, 6 * n_classes, 19, 19)
-        c_conv7 = c_conv7.permute(0, 2, 3, 1).contiguous()  # (N, 19, 19, 6 * n_classes)
-        c_conv7 = c_conv7.view(batch_size, -1,
-                               self.n_classes)  # (N, 2166, n_classes), there are a total 2116 boxes on this feature map
+        c_mlp5 = self.cl_mlp5(transform_5_feats)  # (N, 6 * n_classes, 19, 19)
+        c_mlp5 = c_mlp5.permute(0, 2, 3, 1).contiguous()  # (N, 19, 19, 6 * n_classes)
+        c_mlp5 = c_mlp5.view(batch_size, -1, self.n_classes)  # (N, 2166, n_classes), there are a total 2116 boxes on this feature map
 
-        c_conv8_2 = self.cl_conv8_2(conv8_2_feats)  # (N, 6 * n_classes, 10, 10)
-        c_conv8_2 = c_conv8_2.permute(0, 2, 3, 1).contiguous()  # (N, 10, 10, 6 * n_classes)
-        c_conv8_2 = c_conv8_2.view(batch_size, -1, self.n_classes)  # (N, 600, n_classes)
+        c_mlp6 = self.cl_mlp6(transform_6_feats)  # (N, 6 * n_classes, 10, 10)
+        c_mlp6 = c_mlp6.permute(0, 2, 3, 1).contiguous()  # (N, 10, 10, 6 * n_classes)
+        c_mlp6 = c_mlp6.view(batch_size, -1, self.n_classes)  # (N, 600, n_classes)
 
-        c_conv9_2 = self.cl_conv9_2(conv9_2_feats)  # (N, 6 * n_classes, 5, 5)
-        c_conv9_2 = c_conv9_2.permute(0, 2, 3, 1).contiguous()  # (N, 5, 5, 6 * n_classes)
-        c_conv9_2 = c_conv9_2.view(batch_size, -1, self.n_classes)  # (N, 150, n_classes)
+        c_mlp7 = self.cl_mlp7(transform_7_feats)  # (N, 6 * n_classes, 5, 5)
+        c_mlp7 = c_mlp7.permute(0, 2, 3, 1).contiguous()  # (N, 5, 5, 6 * n_classes)
+        c_mlp7 = c_mlp7.view(batch_size, -1, self.n_classes)  # (N, 150, n_classes)
 
-        c_conv10_2 = self.cl_conv10_2(conv10_2_feats)  # (N, 4 * n_classes, 3, 3)
-        c_conv10_2 = c_conv10_2.permute(0, 2, 3, 1).contiguous()  # (N, 3, 3, 4 * n_classes)
-        c_conv10_2 = c_conv10_2.view(batch_size, -1, self.n_classes)  # (N, 36, n_classes)
-
-        c_conv11_2 = self.cl_conv11_2(conv11_2_feats)  # (N, 4 * n_classes, 1, 1)
-        c_conv11_2 = c_conv11_2.permute(0, 2, 3, 1).contiguous()  # (N, 1, 1, 4 * n_classes)
-        c_conv11_2 = c_conv11_2.view(batch_size, -1, self.n_classes)  # (N, 4, n_classes)
 
         # A total of 8732 boxes
         # Concatenate in this specific order (i.e. must match the order of the prior-boxes)
-        locs = torch.cat([l_conv4_3, l_conv7, l_conv8_2, l_conv9_2, l_conv10_2, l_conv11_2], dim=1)  # (N, 8732, 4)
-        classes_scores = torch.cat([c_conv4_3, c_conv7, c_conv8_2, c_conv9_2, c_conv10_2, c_conv11_2],
-                                   dim=1)  # (N, 8732, n_classes)
+        locs = torch.cat([l_mlp4, l_mlp5, l_mlp6, l_mlp7], dim=1)  # (N, 8732, 4)
+        classes_scores = torch.cat([c_mlp4, c_mlp5, c_mlp6, c_mlp7], dim=1)  # (N, 8732, n_classes)
 
         return locs, classes_scores
 
 
 
+################################ LOSS MODEL #####################################################
+# loss for box and class
+class BoxLoss(nn.Module):
+    def __init__(self, priors_cxcy, threshold=0.5, neg_pos_ratio=3, alpha=1.):
+        super().__init__()
+        self.priors_cxcy = priors_cxcy
+        self.priors_xy = cxcy_to_xy(priors_cxcy)
+        self.threshold = threshold
+        self.neg_pos_ratio = neg_pos_ratio
+        self.alpha = alpha
 
+        self.smooth_l1 = nn.L1Loss()  # *smooth* L1 loss in the paper; see Remarks section in the tutorial
+        self.cross_entropy = nn.CrossEntropyLoss(reduce=False)
+
+
+    def forward(self, predicted_boxes, predicted_scores, boxes, labels):
+
+
+        box_loss = self.smooth_l1(predicted_boxes[positive_priors], true_locs[positive_priors])
+        cls_loss = self.cross_entropy(predicted_scores.view(-1, nclasses), true_classes.view(-1))
+
+        return cls_loss + self.alpha * box_loss
 
 
 
@@ -477,30 +358,58 @@ class PredictionConvolutions(nn.Module):
 
 
 ################################ MAIN MODEL #####################################################
-# put both together in a network
-class WavePrediction(nn.Module):
+# put all previous models together in a network
+class WavePrediction(pl.LightningModule):
     """
-    The SSD300 network - encapsulates the base VGG network, auxiliary, and prediction convolutions.
+    The main network - encapsulates the base network and prediction convolutions.
     """
 
-    def __init__(self, n_classes):
-        super(SSD300, self).__init__()
+    def __init__(self, nclasses, bins, feat_pos, batch_size, lr_scheduler_milestones, lr_gamma, nfeatures, length, nmeasurement, lr=1e-2, L2_reg=1e-3, top_acc=1, loss=BoxLoss(), accuracy=F1_acc()):
+        super().__init__()
 
-        self.n_classes = n_classes
+        self.batch_size = batch_size
+        self.nclasses = nclasses
+        self.nfeatures = nfeatures
+        self.length = length
+        self.nmeasurement = nmeasurement
 
-        self.base = VGGBase()
-        self.aux_convs = AuxiliaryConvolutions()
-        self.pred_convs = PredictionConvolutions(n_classes)
+        self.loss = loss
+        self.lr = lr
+        self.lr_scheduler_milestones = lr_scheduler_milestones
+        self.lr_gamma = lr_gamma
+        self.L2_reg = L2_reg
 
-        # Since lower level features (conv4_3_feats) have considerably larger scales, we take the L2 norm and rescale
-        # Rescale factor is initially set at 20, but is learned for each channel during back-prop
-        self.rescale_factors = nn.Parameter(torch.FloatTensor(1, 512, 1, 1))  # there are 512 channels in conv4_3_feats
-        nn.init.constant_(self.rescale_factors, 20)
+        
+        self.bins = bins
+        self.feat_pos = feat_pos
+
+        # Log hyperparams (all arguments are logged by default)
+        self.save_hyperparameters(
+            'length',
+            'nfeatures',
+            'L2_reg',
+            'lr',
+            'lr_gamma',
+            'lr_scheduler_milestones',
+            'batch_size',
+            'nclasses'
+        )
+
+        # Metrics to log
+        if not top_acc < nclasses:
+            raise ValueError('`top_acc` must be strictly smaller than `nclasses`.')
+        self.train_acc = accuracy()
+        self.val_acc = accuracy()
+
+        
+
+        self.base = BaseModel()
+        self.pred_convs = PredictionModel(nclasses)
 
         # Prior boxes
         self.priors_cxcy = self.create_prior_boxes()
 
-    def forward(self, image):
+    def forward(self, x, pos, batch=None):
         """
         Forward propagation.
 
@@ -508,73 +417,134 @@ class WavePrediction(nn.Module):
         :return: 8732 locations and class scores (i.e. w.r.t each prior box) for each image
         """
         # Run VGG base network convolutions (lower level feature map generators)
-        conv4_3_feats, conv7_feats = self.base(image)  # (N, 512, 38, 38), (N, 1024, 19, 19)
+        out_x, out_pos, out_batch = self.base(x, pos, batch)  # (N, 512, 38, 38), (N, 1024, 19, 19)
 
-        # Rescale conv4_3 after L2 norm
-        norm = conv4_3_feats.pow(2).sum(dim=1, keepdim=True).sqrt()  # (N, 1, 38, 38)
-        conv4_3_feats = conv4_3_feats / norm  # (N, 512, 38, 38)
-        conv4_3_feats = conv4_3_feats * self.rescale_factors  # (N, 512, 38, 38)
-        # (PyTorch autobroadcasts singleton dimensions during arithmetic)
-
-        # Run auxiliary convolutions (higher level feature map generators)
-        conv8_2_feats, conv9_2_feats, conv10_2_feats, conv11_2_feats = \
-            self.aux_convs(conv7_feats)  # (N, 512, 10, 10),  (N, 256, 5, 5), (N, 256, 3, 3), (N, 256, 1, 1)
-
+        
         # Run prediction convolutions (predict offsets w.r.t prior-boxes and classes in each resulting localization box)
-        locs, classes_scores = self.pred_convs(conv4_3_feats, conv7_feats, conv8_2_feats, conv9_2_feats, conv10_2_feats,
-                                               conv11_2_feats)  # (N, 8732, 4), (N, 8732, n_classes)
+        boxes, scores = self.pred_convs(out_x, out_pos, out_batch)
 
-        return locs, classes_scores
+        return boxes, scores
 
+
+
+##### THE LIGHTNING FUNCTIONS
+    @property
+    def input_size(self):
+        # Add a dummy channel dimension for conv1D layer
+        return (self.batch_size, 1, self.length)
+
+    def configure_optimizers(self):
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr, betas=(0.9, 0.999), weight_decay=self.L2_reg)
+        lr_scheduler = {
+            'scheduler': torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=self.lr_scheduler_milestones, gamma=self.lr_gamma),
+            'name': 'LearningRate'
+        }
+        return [optimizer], [lr_scheduler]
+
+    def on_train_start(self):
+        # Add mean accuracies per epoch to the hyperparam Tensorboard's tab
+        self.logger.log_hyperparams(self.hparams, {'hp/train_acc': 0, 'hp/val_acc': 0})
+
+    def training_step(self, batch, batch_idx):
+        x, pos, box = batch['x'], batch['pos'], batch['box']
+        predicted_boxes, predicted_scores = self(x, pos) 
+        train_loss = self.loss(predicted_boxes, predicted_scores, box)
+##### CHANGE PREDICTION TO THE BOXES AND LABELS THAT HAVE BEEN PREDICTED
+        train_acc = self.train_acc(F.softmax(prediction, dim=1), label)
+        
+        # Add logs of the batch to tensorboard
+        self.log('train_loss', train_loss, on_step=True)
+        self.log('train_acc', train_acc, on_step=True)
+        return {'loss': train_loss, 'prediction_boxes': predicted_boxes, 'target_boxes': boxes, 'prediction_labels': predicted_boxes, 'target_labels': boxes}
+
+    # This hook receive the outputs of all training steps as a list of dictionaries
+    def training_epoch_end(self, train_outputs):
+        mean_loss = torch.stack([k['loss'] for k in train_outputs]).mean()
+        train_acc = self.train_acc.compute()
+        
+        self.log('MeanEpoch/train_loss', mean_loss)
+        # The .compute() of Torchmetrics objects compute the average of the epoch and reset for next one
+        self.log('MeanEpoch/train_acc', train_acc)
+        self.log('hp/train_acc', train_acc)
+
+    def validation_step(self, batch, batch_idx):
+        x, pos, box = batch['x'], batch['pos'], batch['box']
+        predicted_boxes, predicted_scores = self(x, pos) 
+        val_loss = self.loss(predicted_boxes, predicted_scores, box)
+##### CHANGE PREDICTION TO THE BOXES AND LABELS THAT HAVE BEEN PREDICTED
+        val_acc = self.val_acc(F.softmax(prediction, dim=1), label)
+
+        self.log('MeanEpoch/val_acc', val_acc, on_epoch=True, prog_bar=True)
+        self.log('hp/val_acc', val_acc)
+        return {'loss': val_loss, 'prediction_boxes': predicted_boxes, 'target_boxes': boxes, 'prediction_labels': predicted_boxes, 'target_labels': boxes}
+
+    # This hook receive the outputs of all validation steps as a list of dictionaries
+    def validation_epoch_end(self, val_outputs):
+        mean_loss = torch.stack([x['loss'] for x in val_outputs]).mean()
+        # Create a figure of the confmat that is loggable
+        preds = torch.cat([F.softmax(x['preds'], dim=1) for x in val_outputs])
+        target = torch.cat([x['target'] for x in val_outputs])
+        confmat = torchmetrics.functional.confusion_matrix(preds, target, normalize=None, num_classes=self.nclasses)
+        df_confmat = pd.DataFrame(confmat.cpu().numpy(), index = range(self.nclasses), columns = range(self.nclasses))
+        plt.figure(figsize = (10,7))
+        fig_ = sns.heatmap(df_confmat, annot=True, cmap='Blues').get_figure()
+        plt.close(fig_)
+
+        self.log('MeanEpoch/val_loss', mean_loss)
+        self.logger.experiment.add_figure("Confusion matrix", fig_, self.current_epoch)
+
+    def get_progress_bar_dict(self):
+        # don't show the version number
+        items = super().get_progress_bar_dict()
+        items.pop("v_num", None)
+        return items
+
+
+
+
+##### CUSTOM CLASS FUNCTIONS
     def create_prior_boxes(self):
         """
         Create the 8732 prior (default) boxes for the SSD300, as defined in the paper.
 
         :return: prior boxes in center-size coordinates, a tensor of dimensions (8732, 4)
         """
-        fmap_dims = {'conv4_3': 38,
-                     'conv7': 19,
-                     'conv8_2': 10,
-                     'conv9_2': 5,
-                     'conv10_2': 3,
-                     'conv11_2': 1}
 
-        obj_scales = {'conv4_3': 0.1,
-                      'conv7': 0.2,
-                      'conv8_2': 0.375,
-                      'conv9_2': 0.55,
-                      'conv10_2': 0.725,
-                      'conv11_2': 0.9}
+        # instead of the fmap_dims create a fake grid or try to make a prior for each point that is left over after the tranformations
+        fmap_dims = {'transform_4': self.feat_pos[0],
+                     'transform_5': self.feat_pos[1],
+                     'transform_6': self.feat_pos[2],
+                     'transform_7': self.feat_pos[3]}
 
-        aspect_ratios = {'conv4_3': [1., 2., 0.5],
-                         'conv7': [1., 2., 3., 0.5, .333],
-                         'conv8_2': [1., 2., 3., 0.5, .333],
-                         'conv9_2': [1., 2., 3., 0.5, .333],
-                         'conv10_2': [1., 2., 0.5],
-                         'conv11_2': [1., 2., 0.5]}
+        obj_scales = {'transform_4': 0.1,
+                      'transform_5': 0.3,
+                      'transform_6': 0.6,
+                      'transform_7': 0.9}
+
+        aspect_ratios = {'transform_4': [1., 2., 0.5],
+                         'transform_5': [1., 2., 3., 0.5, .333],
+                         'transform_6': [1., 2., 3., 0.5, .333],
+                         'transform_7': [1., 2., 3., 0.5, .333]}
+        
+        euler_angles = {'transform_4': self.bins[0],
+                        'transform_5': self.bins[1],
+                        'transform_6': self.bins[2],
+                        'transform_7': self.bins[3]}
 
         fmaps = list(fmap_dims.keys())
 
         prior_boxes = []
 
         for k, fmap in enumerate(fmaps):
-            for i in range(fmap_dims[fmap]):
-                for j in range(fmap_dims[fmap]):
-                    cx = (j + 0.5) / fmap_dims[fmap]
-                    cy = (i + 0.5) / fmap_dims[fmap]
+            for p in fmap_dims[fmap]:
+                cx, cy, cz = p
+
+                for e in euler_angles[fmap]: 
+                    ez, ey, ex = e
 
                     for ratio in aspect_ratios[fmap]:
-                        prior_boxes.append([cx, cy, obj_scales[fmap] * sqrt(ratio), obj_scales[fmap] / sqrt(ratio)])
+                        prior_boxes.append([obj_scales[fmap] * sqrt(ratio), obj_scales[fmap] / sqrt(ratio), obj_scales[fmap] * sqrt(ratio), cx, cy, cz, ez, ey, ex])
 
-                        # For an aspect ratio of 1, use an additional prior whose scale is the geometric mean of the
-                        # scale of the current feature map and the scale of the next feature map
-                        if ratio == 1.:
-                            try:
-                                additional_scale = sqrt(obj_scales[fmap] * obj_scales[fmaps[k + 1]])
-                            # For the last feature map, there is no "next" feature map
-                            except IndexError:
-                                additional_scale = 1.
-                            prior_boxes.append([cx, cy, additional_scale, additional_scale])
 
         prior_boxes = torch.FloatTensor(prior_boxes).to(device)  # (8732, 4)
         prior_boxes.clamp_(0, 1)  # (8732, 4); this line has no effect; see Remarks section in tutorial
@@ -599,26 +569,28 @@ class WavePrediction(nn.Module):
         predicted_scores = F.softmax(predicted_scores, dim=2)  # (N, 8732, n_classes)
 
         # Lists to store final predicted boxes, labels, and scores for all images
-        all_images_boxes = list()
-        all_images_labels = list()
-        all_images_scores = list()
+        all_clouds_boxes = list()
+        all_clouds_labels = list()
+        all_clouds_scores = list()
 
         assert n_priors == predicted_locs.size(1) == predicted_scores.size(1)
 
         for i in range(batch_size):
             # Decode object coordinates from the form we regressed predicted boxes to
+
+##### HOW TO DECODE OUR BOXES? ALSO THERE IS A LOG TRANSFORM SOMEWHERE IN THESE HELPER FUNCTIONS, FIND OUT WHAT IT DO BE DOIN
             decoded_locs = cxcy_to_xy(
                 gcxgcy_to_cxcy(predicted_locs[i], self.priors_cxcy))  # (8732, 4), these are fractional pt. coordinates
 
             # Lists to store boxes and scores for this image
-            image_boxes = list()
-            image_labels = list()
-            image_scores = list()
+            cloud_boxes = list()
+            cloud_labels = list()
+            cloud_scores = list()
 
             max_scores, best_label = predicted_scores[i].max(dim=1)  # (8732)
 
             # Check for each class
-            for c in range(1, self.n_classes):
+            for c in range(1, self.nclasses):
                 # Keep only predicted boxes and scores where scores for this class are above the minimum score
                 class_scores = predicted_scores[i][:, c]  # (8732)
                 score_above_min_score = class_scores > min_score  # torch.uint8 (byte) tensor, for indexing
@@ -656,178 +628,32 @@ class WavePrediction(nn.Module):
                     suppress[box] = 0
 
                 # Store only unsuppressed boxes for this class
-                image_boxes.append(class_decoded_locs[1 - suppress])
-                image_labels.append(torch.LongTensor((1 - suppress).sum().item() * [c]).to(device))
-                image_scores.append(class_scores[1 - suppress])
+                cloud_boxes.append(class_decoded_locs[1 - suppress])
+                cloud_labels.append(torch.LongTensor((1 - suppress).sum().item() * [c]).to(device))
+                cloud_scores.append(class_scores[1 - suppress])
 
             # If no object in any class is found, store a placeholder for 'background'
-            if len(image_boxes) == 0:
-                image_boxes.append(torch.FloatTensor([[0., 0., 1., 1.]]).to(device))
-                image_labels.append(torch.LongTensor([0]).to(device))
-                image_scores.append(torch.FloatTensor([0.]).to(device))
+            if len(cloud_boxes) == 0:
+                cloud_boxes.append(torch.FloatTensor([[1., 1., 1., 0., 0., 0., 0., 0., 0.]]).to(device))
+                cloud_labels.append(torch.LongTensor([0]).to(device))
+                cloud_scores.append(torch.FloatTensor([0.]).to(device))
 
             # Concatenate into single tensors
-            image_boxes = torch.cat(image_boxes, dim=0)  # (n_objects, 4)
-            image_labels = torch.cat(image_labels, dim=0)  # (n_objects)
-            image_scores = torch.cat(image_scores, dim=0)  # (n_objects)
-            n_objects = image_scores.size(0)
+            cloud_boxes = torch.cat(cloud_boxes, dim=0)  # (n_objects, 4)
+            cloud_labels = torch.cat(cloud_labels, dim=0)  # (n_objects)
+            cloud_scores = torch.cat(cloud_scores, dim=0)  # (n_objects)
+            n_objects = cloud_scores.size(0)
 
             # Keep only the top k objects
             if n_objects > top_k:
-                image_scores, sort_ind = image_scores.sort(dim=0, descending=True)
-                image_scores = image_scores[:top_k]  # (top_k)
-                image_boxes = image_boxes[sort_ind][:top_k]  # (top_k, 4)
-                image_labels = image_labels[sort_ind][:top_k]  # (top_k)
+                cloud_scores, sort_ind = cloud_scores.sort(dim=0, descending=True)
+                cloud_scores = cloud_scores[:top_k]  # (top_k)
+                cloud_boxes = cloud_boxes[sort_ind][:top_k]  # (top_k, 4)
+                cloud_labels = cloud_labels[sort_ind][:top_k]  # (top_k)
 
             # Append to lists that store predicted boxes and scores for all images
-            all_images_boxes.append(image_boxes)
-            all_images_labels.append(image_labels)
-            all_images_scores.append(image_scores)
+            all_clouds_boxes.append(cloud_boxes)
+            all_clouds_labels.append(cloud_labels)
+            all_clouds_scores.append(cloud_scores)
 
-        return all_images_boxes, all_images_labels, all_images_scores  # lists of length batch_size
-
-
-
-
-
-
-
-
-
-
-
-
-################################ LOSS FUNCTION #######################################################
-# Loss module to calculate box accuracy
-class MultiBoxLoss(nn.Module):
-    """
-    The MultiBox loss, a loss function for object detection.
-
-    This is a combination of:
-    (1) a localization loss for the predicted locations of the boxes, and
-    (2) a confidence loss for the predicted class scores.
-    """
-
-    def __init__(self, priors_xy, threshold=0.5, neg_pos_ratio=3, alpha=1.):
-        super(MultiBoxLoss, self).__init__()
-        self.priors_xy = priors_xy
-        self.threshold = threshold
-        self.neg_pos_ratio = neg_pos_ratio
-        self.alpha = alpha
-
-###### TODO: maybe choose different loss functions???
-        self.smooth_l1 = nn.L1Loss()  # *smooth* L1 loss in the paper; see Remarks section in the tutorial
-        self.cross_entropy = nn.CrossEntropyLoss(reduce=False)
-
-    def forward(self, predicted_locs, predicted_scores, boxes, labels):
-        """
-        Forward propagation.
-
-        :param predicted_locs: predicted locations/boxes w.r.t the 8732 prior boxes, a tensor of dimensions (N, 8732, 4)
-        :param predicted_scores: class scores for each of the encoded locations/boxes, a tensor of dimensions (N, 8732, n_classes)
-        :param boxes: true  object bounding boxes in boundary coordinates, a list of N tensors
-        :param labels: true object labels, a list of N tensors
-        :return: multibox loss, a scalar
-        """
-        batch_size = predicted_locs.size(0)
-        n_priors = self.priors_cxcy.size(0)
-        n_classes = predicted_scores.size(2)
-
-        assert n_priors == predicted_locs.size(1) == predicted_scores.size(1)
-
-        true_locs = torch.zeros((batch_size, n_priors, 6), dtype=torch.float).to(device)  # (N, 8732, 4)
-        true_classes = torch.zeros((batch_size, n_priors), dtype=torch.long).to(device)  # (N, 8732)
-        
-
-#### TOO CONFUSED WITH THE INDEXES
-
-        # For each image
-        for i in range(batch_size):
-            n_objects = boxes[i].size(0)
-            #labels = torch.zeros((batch_size, n_objects), dtype=torch.long).to(device)
-
-###### TODO: make jaccard overlap function for graph
-            overlap = find_jaccard_overlap(boxes[i],
-                                           self.priors_xy)  # (n_objects, 8732)         # (n_objects, n_priors)
-
-            # For each prior, find the object that has the maximum overlap
-            # output: (max, max_indices)
-            overlap_for_each_prior, object_for_each_prior = overlap.max(dim=0)  # (8732)
-
-            # We don't want a situation where an object is not represented in our positive (non-background) priors -
-            # 1. An object might not be the best object for all priors, and is therefore not in object_for_each_prior.
-            # 2. All priors with the object may be assigned as background based on the threshold (0.5).
-
-            # To remedy this -
-            # First, find the prior that has the maximum overlap for each object.
-            _, prior_for_each_object = overlap.max(dim=1)  # (N_o)
-
-            # Then, assign each object to the corresponding maximum-overlap-prior. (This fixes 1.)
-            object_for_each_prior[prior_for_each_object] = torch.LongTensor(range(n_objects)).to(device)
-            # reassignes the corresponding object index to each prior that was voted best for that object
-
-            # To ensure these priors qualify, artificially give them an overlap of greater than 0.5. (This fixes 2.)
-            overlap_for_each_prior[prior_for_each_object] = 1.
-
-            # Labels for each prior
-            #labels = torch.ones(object_for_each_prior.size(0))
-            label_for_each_prior = labels[i][object_for_each_prior]  # (8732)
-            # Set priors whose overlaps with objects are less than the threshold to be background (no object)
-            label_for_each_prior[overlap_for_each_prior < self.threshold] = 0  # (8732)
-
-            # Store
-            true_classes[i] = label_for_each_prior
-
-            # Encode center-size object coordinates into the form we regressed predicted boxes to
-####### TODO: figure out what the output format of the model will be for the boxes and change it
-            true_locs[i] = cxcy_to_gcxgcy(xy_to_cxcy(boxes[i][object_for_each_prior]), self.priors_cxcy)  # (8732, 4)
-
-        # Identify priors that are positive (object/non-background)
-        positive_priors = true_classes != 0  # (N, 8732)
-
-
-###### TODO: understand this whole part (but it should probably work)
-        # LOCALIZATION LOSS
-
-        # Localization loss is computed only over positive (non-background) priors
-        loc_loss = self.smooth_l1(predicted_locs[positive_priors], true_locs[positive_priors])  # (), scalar
-
-        # Note: indexing with a torch.uint8 (byte) tensor flattens the tensor when indexing is across multiple dimensions (N & 8732)
-        # So, if predicted_locs has the shape (N, 8732, 4), predicted_locs[positive_priors] will have (total positives, 4)
-
-        # CONFIDENCE LOSS
-
-        # Confidence loss is computed over positive priors and the most difficult (hardest) negative priors in each image
-        # That is, FOR EACH IMAGE,
-        # we will take the hardest (neg_pos_ratio * n_positives) negative priors, i.e where there is maximum loss
-        # This is called Hard Negative Mining - it concentrates on hardest negatives in each image, and also minimizes pos/neg imbalance
-
-        # Number of positive and hard-negative priors per image
-        n_positives = positive_priors.sum(dim=1)  # (N)
-        n_hard_negatives = self.neg_pos_ratio * n_positives  # (N)
-
-        # First, find the loss for all priors
-        conf_loss_all = self.cross_entropy(predicted_scores.view(-1, n_classes), true_classes.view(-1))  # (N * 8732)
-        conf_loss_all = conf_loss_all.view(batch_size, n_priors)  # (N, 8732)
-
-        # We already know which priors are positive
-        conf_loss_pos = conf_loss_all[positive_priors]  # (sum(n_positives))
-
-        # Next, find which priors are hard-negative
-        # To do this, sort ONLY negative priors in each image in order of decreasing loss and take top n_hard_negatives
-        conf_loss_neg = conf_loss_all.clone()  # (N, 8732)
-        conf_loss_neg[positive_priors] = 0.  # (N, 8732), positive priors are ignored (never in top n_hard_negatives)
-        conf_loss_neg, _ = conf_loss_neg.sort(dim=1, descending=True)  # (N, 8732), sorted by decreasing hardness
-        hardness_ranks = torch.LongTensor(range(n_priors)).unsqueeze(0).expand_as(conf_loss_neg).to(device)  # (N, 8732)
-        hard_negatives = hardness_ranks < n_hard_negatives.unsqueeze(1)  # (N, 8732)
-        conf_loss_hard_neg = conf_loss_neg[hard_negatives]  # (sum(n_hard_negatives))
-
-        # As in the paper, averaged over positive priors only, although computed over both positive and hard-negative priors
-        conf_loss = (conf_loss_hard_neg.sum() + conf_loss_pos.sum()) / n_positives.sum().float()  # (), scalar
-
-        # TOTAL LOSS
-
-        return conf_loss + self.alpha * loc_loss
-
-
-
+        return all_clouds_boxes, all_clouds_labels, all_clouds_scores  # lists of length batch_size

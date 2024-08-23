@@ -168,7 +168,7 @@ class DataProcesser:
 class CloudDataset(Dataset):
     """Standard dataset object with ID, class"""
 
-    def __init__(self, dataset, connection_method='knn', radius=2, col_cloud='FOV', col_coor=['x_coordinate', 'y_coordinate', 'time_point'], col_box=['x_min', 'y_min', 'time_min', 'x_max', 'y_max', 'time_max'], groups=None):
+    def __init__(self, dataset, connection_method='knn', radius=2, col_cloud='FOV', col_coor=['x_coordinate', 'y_coordinate', 'time_point'], col_box=['width','length','height','center_x','center_y','center_z','euler_z','euler_y','euler_x'], groups=None):
         """
         General Dataset class for arbitrary uni and multivariate point clouds.
         :param data_folder: folder where data files are stored
@@ -216,21 +216,21 @@ class CloudDataset(Dataset):
 
 ####### TODO: introduce more graph connection methods
         # Convert to point cloud (=localized graph without edges)
-        if self.connection_method == 'KNN':
-            connect_transform = KNNGraph(k=self.radius)
-        if self.connection_method == 'RADIUS':
-            connect_transform = RadiusGraph(r=self.radius)
+        #if self.connection_method == 'KNN':
+        #    connect_transform = KNNGraph(k=self.radius)
+        #if self.connection_method == 'RADIUS':
+        #    connect_transform = RadiusGraph(r=self.radius)
         cloud = Data(x=node_features, pos=node_positions)
-        cloud = connect_transform(cloud)
+        #cloud = connect_transform(cloud)
 
         # Read objects in this image (bounding boxes, labels, difficulties)
         boxes = self.boxes[self.boxes[self.col_cloud] == self.nclouds[i]][self.col_box]
-        boxes = torch.FloatTensor(boxes)  # (n_objects, 6)
+        boxes = boxes[self.col_box]
+        boxes = torch.FloatTensor(boxes)  # (n_objects, 9)
 #### idk if this whole label thing works
         cloud, boxes = transform(cloud, boxes, axis=2, p=0.5)
-        labels = torch.LongTensor([1 for i in range(boxes.size(0))])
 
-        return cloud, boxes, labels
+        return {'x': cloud.x, 'pos': cloud.pos,'boxes': boxes}
     
     def detect_groups(self):
         colnames = list(self.dataset.columns.values)
@@ -240,30 +240,6 @@ class CloudDataset(Dataset):
         self.groups = groups
 
         return None
-    
-
-    def collate_fn(self, batch):
-        """
-        Since each image may have a different number of objects, we need a collate function (to be passed to the DataLoader).
-
-        This describes how to combine these tensors of different sizes. We use lists.
-
-        Note: this need not be defined in this Class, can be standalone.
-
-        :param batch: an iterable of N sets from __getitem__()
-        :return: a tensor of images, lists of varying-size tensors of bounding boxes, labels, and difficulties
-        """
-
-        clouds = list()
-        boxes = list()
-
-        for b in batch:
-            clouds.append(b[0])
-            boxes.append(b[1])
-            
-        clouds = torch.stack(clouds, dim=0) #### NEEDS TO BE ADJUSTED FOR PYTORCHGEOM FORMAT
-
-        return clouds, boxes  # tensor (N, 3, 300, 300), 3 lists of N tensors each
     
 
     def normalize_meas(self, method='zscore', norm_per_meas=False):
