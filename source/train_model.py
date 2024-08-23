@@ -20,9 +20,10 @@ import torch_geometric as tg
 import torch.optim
 import torch
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
-from torch.utils.data import DataLoader
+#from torch_geometric.loader import DataLoader
 from torchsampler import ImbalancedDatasetSampler
 from torchvision import transforms
+from torch.utils.data import DataLoader
 
 
 # import custom libraries
@@ -142,7 +143,7 @@ def load_data(args):
     # load the graph sets
     data_train = CloudDataset(dataset=data.train_set, knnradius=args.knnradius).normalize_meas(method=args.method, norm_per_meas=args.norm_per_meas)
     data_validation = CloudDataset(dataset=data.validation_set, knnradius=args.knnradius).normalize_meas(method=args.method, norm_per_meas=args.norm_per_meas)
-
+    
 
     if args.batch > len(data_train) or args.batch > len(data_validation):
         raise ValueError('Batch size ({}) must be smaller than the number of clouds in the training ({}) and the validation ({}) sets.'.format(args.batch, len(data_train), len(data_validation)))
