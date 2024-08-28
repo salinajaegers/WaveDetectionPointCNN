@@ -1,21 +1,9 @@
 import pandas as pd
-import warnings
-import zipfile
 import numpy as np
-from copy import copy
-from re import search
-from os import remove, chdir
-from os.path import split, splitext
-from functools import reduce
-from collections import OrderedDict
 import random
 
-import json
-import os
 import torch
 import random
-import xml.etree.ElementTree as ET
-import torchvision.transforms.functional as FT
 
 from scipy.spatial.transform import Rotation
 from pytorch3d.ops import box3d_overlap
@@ -63,6 +51,10 @@ def transform(cloud, boxes, axis=2, p=0.5):
 
     return cloud, boxes
 
+
+
+
+
 def find_intersection(box1, box2):
     """
     FROM THE box3d_overlap IMPLEMENTATION: 
@@ -106,17 +98,28 @@ def find_intersection(box1, box2):
             defined as: `iou = vol / (vol1 + vol2 - vol)`
     """
     
-    
-    intersection_vol, iou_3d = box3d_overlap(box1, box2)
+    box1_vertices = rotation_to_vertex(box1[0])
+    for i in range(1, box1.size(0)):
+        new_vertice = rotation_to_vertex(box1[i])
+        box1_vertices = torch.stack([box1_vertices,new_vertice])
+
+    box2_vertices = rotation_to_vertex(box2[0])
+    for i in range(1, box2.size(0)):
+        new_vertice = rotation_to_vertex(box2[i])
+        box2_vertices = torch.stack([box2_vertices,new_vertice])
+
+
+    intersection_vol, iou_3d = box3d_overlap(box1_vertices, box2_vertices)
+
+    return intersection_vol, iou_3d
 
 
 
 def F1_acc(predicted_boxes, predicted_scores, boxes, threshold=0.5):
-
-    assert len(predicted_boxes) == len(predicted_scores) == len(boxes)
     
     # predicted_boxes dim: (N, n_priors, 9)
-    # predicted_scores dim: (N, n_priors)
+
+    
 
     # boxes dim: (n_realboxes, 9)
     boxes = torch.cat(boxes, dim=0)  # (n_objects, 24)
@@ -125,13 +128,21 @@ def F1_acc(predicted_boxes, predicted_scores, boxes, threshold=0.5):
     predicted_boxes = predicted_boxes.view(-1, 8, 3)
     predicted_scores = torch.cat(predicted_scores, dim=0)  # (n_objects)
 
-    n_priors = predicted_scores.size(0)
+
+    predicted_scores, sort_ind = torch.sort(predicted_scores, dim=0, descending=True)  # (n_class_detections)
+    predicted_boxes = predicted_boxes[sort_ind]
+    
+
+    n_priors = predicted_boxes.size(0)
     n_boxes = boxes.size(0)
+
+    
+
     true_positives = torch.zeros((n_priors), dtype=torch.float).to(device)  # (n_class_detections)
     false_positives = torch.zeros((n_priors), dtype=torch.float).to(device)  # (n_class_detections)
     
 
-    intersection_vol, iou_3d = box3d_overlap(predicted_boxes, boxes)  #iou: (N_predbox, N_truebox)
+    intersection_vol, iou_3d = find_intersection(predicted_boxes, boxes)  #iou: (N_predbox, N_truebox)
 
     
     for p in range(n_priors):
@@ -160,6 +171,9 @@ def F1_acc(predicted_boxes, predicted_scores, boxes, threshold=0.5):
 
     return f1_score
 
+
+
+
 def rotation_to_vertex(box):
     """
     Convert a box in format (width, lenght, height, [center], [euler angles])
@@ -167,7 +181,7 @@ def rotation_to_vertex(box):
     :param: box tensor(1,9): a box in format dimensions, center, euler angles
     
     
-
+    :return: box tensor(8,3) in format:
     box_corner_vertices = [
         [0, 0, 0],          xmin, ymin, zmin
         [1, 0, 0],          xmax, ymin, zmin
@@ -206,7 +220,7 @@ def rotation_to_vertex(box):
     rotated_vertices = np.dot(local_vertices, r.T)
     final_vertices = torch.from_numpy(rotated_vertices) + torch.tensor([cx, cy, cz])
     
-    return final_vertices
+    return final_vertices.view(8, 3)
 
 
 
@@ -220,10 +234,8 @@ def vertex_to_rotation(box):
     """
     Convert a box in format (width, lenght, height, [center], [euler angles])
     to the format of indicating all the vertices for pytorch3d iou computation.
-    :param: box tensor(1,24): a box in format dimensions, center, euler angles
+    :param: box tensor(8,3): a box in format like below
     
-    
-
     box_corner_vertices = [
         [0, 0, 0],          xmin, ymin, zmin
         [1, 0, 0],          xmax, ymin, zmin
@@ -234,6 +246,8 @@ def vertex_to_rotation(box):
         [1, 1, 1],          xmax, ymax, zmax
         [0, 1, 1],          xmin, ymax, zmax
     ]
+
+    :returns: box in format: dimensions, center, euler angles
     """
     box = box.view(8,3)
 
@@ -266,9 +280,49 @@ def vertex_to_rotation(box):
     r = Rotation.from_matrix(r)
     euler_angles = r.as_euler('ZYX', degrees=True)
     
-    
+
     box = torch.tensor([width, length, height, center[0], center[1], center[2], euler_angles[0], euler_angles[1], euler_angles[2]])
     
     return box
 
 
+
+def prior_binnin(euler_stats, dimension_stats, kmeans_clusters):
+    """
+    Creats bins for the prior boxes based on the annotated boxes.
+
+    :param: euler_stats, dict: the statistics for the euler angles
+            {'mu': [mu_x, mu_y, mu_z], 'sd': [sd_x, sd_y, sd_z], 
+            'min': [min_x, min_y, min_z], 'max': [max_x, max_y, max_z]}
+
+    :param: dimension_stats, dict: the statistics for the dimensions
+            {'mu': [mu_x, mu_y, mu_z], 'sd': [sd_x, sd_y, sd_z], 
+            'min': [min_x, min_y, min_z], 'max': [max_x, max_y, max_z]}
+
+    :param: kmeans_clusters, dict: the cluster centers for each dimension and angle
+            {'width': kmeans_width, 'length': kmeans_length, 'height': kmeans_height, 
+            'euler_z': kmeans_eulerz, 'euler_y': kmeans_eulery, 'euler_x': kmeans_eulerx}
+
+
+    :returns: bins, dict
+    """
+
+
+#####TODO: aspect ratios?????? IDK HOOOOOOW
+    
+
+    # the angle bins
+    # abstand = (min + max) // 20
+    #   seq(min, max, abstand)
+    # take minmax or sd??????????
+
+
+
+
+    return None
+
+
+def even_intervals(nepochs, ninterval=1):
+    """Divide a number of epochs into regular intervals."""
+    out = list(np.linspace(0, nepochs, num=ninterval, endpoint=False, dtype=int))[1:]
+    return out

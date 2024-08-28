@@ -16,11 +16,12 @@ from functools import reduce
 from collections import OrderedDict
 import random
 import os
+from sklearn.cluster import KMeans
 
 from utils import transform
 
 class DataProcesser:
-    def __init__(self, archive_path, col_cloud='FOV', col_coor=['x_coordinate', 'y_coordinate', 'time_point'], col_box=['x_min', 'y_min', 'time_min', 'x_max', 'y_max', 'time_max'], groups=None, ftrain=.65, fvalidate=.20, ftest=.15, read_on_init=True, **kwargs):
+    def __init__(self, archive_path, col_cloud='FOV', col_coor=['x_coordinate', 'y_coordinate', 'time_point'], col_box=['x_min', 'y_min', 'time_min', 'x_max', 'y_max', 'time_max'], groups=None, **kwargs):
         
         self.archive_path = archive_path
         self.archive = zipfile.ZipFile(self.archive_path, 'r')
@@ -43,6 +44,7 @@ class DataProcesser:
         self.logs = []
 
         self.read_archive()
+        
         
         #self.split_data(ftrain, fvalidate, ftest)
             
@@ -93,8 +95,13 @@ class DataProcesser:
         test_id = list(self.nclouds[int((len(self.nclouds)+1)*fvalidate):])
 
         self.train_set = self.dataset[self.dataset[self.col_cloud].isin(train_id)]
+        self.train_boxes = self.boxes[self.boxes[self.col_cloud].isin(train_id)]
+
         self.validation_set = self.dataset[self.dataset[self.col_cloud].isin(validation_id)]
+        self.validation_boxes = self.boxes[self.boxes[self.col_cloud].isin(validation_id)]
+
         self.test_set = self.dataset[self.dataset[self.col_cloud].isin(test_id)]
+        self.test_boxes = self.boxes[self.boxes[self.col_cloud].isin(test_id)]
 
 ####TODO: PUT A CHECK TO SEE THAT NONE OF THE SUBSETS ARE EMPTY
         return None
@@ -106,6 +113,8 @@ class DataProcesser:
         :return:
         """
         numerics = ['int16', 'int32', 'int64', 'float16', 'float32', 'float64']
+        self.dataset.columns = self.dataset.columns.lower()
+        self.boxes.columns = self.boxes.columns.lower()
         colnames_dataset = list(self.dataset.columns.values)
         colnames_dataset.remove(self.col_cloud)
         colnames_dataset.remove(self.col_coor)
@@ -140,6 +149,8 @@ class DataProcesser:
 
         return None
     
+
+
     def detect_groups(self):
         colnames = list(self.dataset.columns.values)
         colnames.remove(self.col_id)
@@ -148,6 +159,9 @@ class DataProcesser:
         self.groups = groups
 
         return None
+    
+
+
     
 
 
@@ -165,10 +179,10 @@ class DataProcesser:
 
 
 
-class CloudDataset(Dataset):
+class CloudDataset():
     """Standard dataset object with ID, class"""
 
-    def __init__(self, dataset, connection_method='knn', radius=2, col_cloud='FOV', col_coor=['x_coordinate', 'y_coordinate', 'time_point'], col_box=['width','length','height','center_x','center_y','center_z','euler_z','euler_y','euler_x'], groups=None):
+    def __init__(self, dataset, boxes, connection_method='knn', radius=2, col_cloud='FOV', col_coor=['x_coordinate', 'y_coordinate', 'time_point'], col_box=['width','length','height','center_x','center_y','center_z','euler_z','euler_y','euler_x'], groups=None, n_clusters=3):
         """
         General Dataset class for arbitrary uni and multivariate point clouds.
         :param data_folder: folder where data files are stored
@@ -177,6 +191,7 @@ class CloudDataset(Dataset):
         """
         # Read dataset (since the whole dataset is split in the read in, the dataset passed here is only either train, test, or validate)
         self.dataset = dataset
+        self.boxes = boxes
 
         self.col_cloud = col_cloud
         self.col_coor = col_coor
@@ -186,6 +201,11 @@ class CloudDataset(Dataset):
 
         self.col_cloud_idx = self.dataset.columns.get_loc(self.col_cloud)
         self.col_coor_idx = self.dataset.columns.get_loc(self.col_coor)
+
+        self.euler_stats = None
+        self.dimension_stats = None
+        self.kmeans_clusters = None
+        self.n_clusters = n_clusters
 
         self.groups = groups
         if self.groups is None:
@@ -198,6 +218,7 @@ class CloudDataset(Dataset):
 
         self.groups_indices = {}
         self.get_groups_indices()
+        self.binnin_stats()
 
     def __len__(self):
         """
@@ -228,7 +249,9 @@ class CloudDataset(Dataset):
         boxes = boxes[self.col_box]
         boxes = torch.FloatTensor(boxes)  # (n_objects, 9)
 #### idk if this whole label thing works
-        cloud, boxes = transform(cloud, boxes, axis=2, p=0.5)
+        #cloud, boxes = transform(cloud, boxes, axis=2, p=0.5)
+
+        
 
         return {'x': cloud.x, 'pos': cloud.pos,'boxes': boxes}
     
@@ -296,6 +319,63 @@ class CloudDataset(Dataset):
                 self.dataset[self.groups] = (self.dataset[self.groups] - mini) / (maxi - mini)
 
         self.logs.append('Process: method:{}, norm_per_meas:{}'.format(method, norm_per_meas))
+
+        return None
+    
+
+    def binnin_stats(self):
+        """
+        The stats used to build the bins used to create priors.
+        """
+        # euler stats
+        euler_x = self.boxes['euler_x']
+        euler_y = self.boxes['euler_y']
+        euler_z = self.boxes['euler_z']
+
+        mu_x = np.nanmean(euler_x)
+        mu_y = np.nanmean(euler_y)
+        mu_z = np.nanmean(euler_z)
+
+        sd_x = np.nanstd(euler_x)
+        sd_y = np.nanstd(euler_y)
+        sd_z = np.nanstd(euler_z)
+
+        min_x, max_x = np.nanmin(euler_x), np.nanmax(euler_x)
+        min_y, max_y = np.nanmin(euler_y), np.nanmax(euler_y)
+        min_z, max_z = np.nanmin(euler_z), np.nanmax(euler_z)
+
+        self.euler_stats = {'mu': [mu_x, mu_y, mu_z], 'sd': [sd_x, sd_y, sd_z], 'min': [min_x, min_y, min_z], 'max': [max_x, max_y, max_z]}
+
+        # dimension stats
+        width = self.boxes['width']
+        length = self.boxes['length']
+        height = self.boxes['height']
+
+        mu_x = np.nanmean(width)
+        mu_y = np.nanmean(length)
+        mu_z = np.nanmean(height)
+
+        sd_x = np.nanstd(width)
+        sd_y = np.nanstd(length)
+        sd_z = np.nanstd(height)
+
+        min_x, max_x = np.nanmin(width), np.nanmax(width)
+        min_y, max_y = np.nanmin(length), np.nanmax(length)
+        min_z, max_z = np.nanmin(height), np.nanmax(height)
+
+        self.dimension_stats = {'mu': [mu_x, mu_y, mu_z], 'sd': [sd_x, sd_y, sd_z], 'min': [min_x, min_y, min_z], 'max': [max_x, max_y, max_z]}
+
+
+        # the k-means detected centers
+        kmeans_width = KMeans(n_clusters=self.n_clusters, random_state=7, n_init="auto").fit(width).cluster_centers_
+        kmeans_length = KMeans(n_clusters=self.n_clusters, random_state=7, n_init="auto").fit(length).cluster_centers_
+        kmeans_height = KMeans(n_clusters=self.n_clusters, random_state=7, n_init="auto").fit(height).cluster_centers_
+
+        kmeans_eulerz = KMeans(n_clusters=self.n_clusters, random_state=7, n_init="auto").fit(euler_z).cluster_centers_
+        kmeans_eulery = KMeans(n_clusters=self.n_clusters, random_state=7, n_init="auto").fit(euler_y).cluster_centers_
+        kmeans_eulerx = KMeans(n_clusters=self.n_clusters, random_state=7, n_init="auto").fit(euler_x).cluster_centers_
+
+        self.kmeans_clusters = {'width': kmeans_width, 'length': kmeans_length, 'height': kmeans_height, 'euler_z': kmeans_eulerz, 'euler_y': kmeans_eulery, 'euler_x': kmeans_eulerx}
 
         return None
     

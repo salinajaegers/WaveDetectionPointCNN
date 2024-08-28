@@ -18,6 +18,7 @@ import torch.nn as nn
 import pytorch_lightning as pl
 import torchmetrics
 import torchvision
+from torch.nn.functional import softmax
 
 
 import seaborn as sns
@@ -215,13 +216,12 @@ class PredictionModel(nn.Module):
     A high score for 'background' = no object.
     """
 
-    def __init__(self, n_classes):
+    def __init__(self):
         """
         :param n_classes: number of different types of objects
         """
         super().__init__()
 
-        self.n_classes = n_classes
 
         # Number of prior-boxes we are considering per position in each feature map
         n_boxes = {'transform_4_feats': 4,
@@ -236,16 +236,15 @@ class PredictionModel(nn.Module):
         #dim_model_down = [32, 64, 128, 128, 256, 512, 1024]
         # Localization prediction convolutions (predict offsets w.r.t prior-boxes)
         #MLP([in_channels, out_channels], plain_last=False)
-        self.loc_mlp4 = MLP([128, n_boxes['transform_4_feats'] * box_dim], plain_last=False)
+        #self.loc_mlp4 = MLP([128, n_boxes['transform_4_feats'] * box_dim], plain_last=False)
         self.loc_mlp5 = MLP([256, n_boxes['transform_5_feats'] * box_dim], plain_last=False)
         self.loc_mlp6 = MLP([512, n_boxes['transform_6_feats'] * box_dim], plain_last=False)
         self.loc_mlp7 = MLP([1024, n_boxes['transform_7_feats'] * box_dim], plain_last=False)
 
         # Class prediction convolutions (predict classes in localization boxes)
-        self.cl_mlp4 = MLP([128, n_boxes['transform_4_feats'] * n_classes], plain_last=False)
-        self.cl_mlp5 = MLP([256, n_boxes['transform_5_feats'] * n_classes], plain_last=False)
-        self.cl_mlp6 = MLP([512, n_boxes['transform_6_feats'] * n_classes], plain_last=False)
-        self.cl_mlp7 = MLP([1024, n_boxes['transform_7_feats'] * n_classes], plain_last=False)
+        self.sc_mlp5 = MLP([256, n_boxes['transform_5_feats']], plain_last=False)
+        self.sc_mlp6 = MLP([512, n_boxes['transform_6_feats']], plain_last=False)
+        self.sc_mlp7 = MLP([1024, n_boxes['transform_7_feats']], plain_last=False)
 
 
         # Initialize convolutions' parameters
@@ -272,19 +271,27 @@ class PredictionModel(nn.Module):
         :param conv11_2_feats: conv11_2 feature map, a tensor of dimensions (N, 256, 1, 1)
         :return: 8732 locations and class scores (i.e. w.r.t each prior box) for each image
         """
-        batch_size = transform_4_feats.size(0)
+
+        #transform_4_feats = out_x[-4]
+        transform_5_feats = out_x[-3]
+        transform_6_feats = out_x[-2]
+        transform_7_feats = out_x[-1]
+
+
+        batch_size = transform_5_feats.size(0)
 
 ##### TODO: check if the order of the prior box coordinates is right
 ### This might be different dimension wise since the point clouds do not have the same amount of points 
 ### We will see if this has an effect tho (hope not)
         # Predict localization boxes' bounds (as offsets w.r.t prior-boxes)
-        print('THE SHAPE OF THE TRANSFOMS ARE: ' + str(transform_4_feats.shape))
-        l_mlp4 = self.loc_mlp4(transform_4_feats)  # (N, 16, 38, 38)
-        print('THE SHAPE OF THE TRANSFOMS ARE: ' + str(l_mlp4.shape))
-        l_mlp4 = l_mlp4.permute(0, 2, 3, 1).contiguous()  # (N, 38, 38, 16), to match prior-box order (after .view())
-        # (.contiguous() ensures it is stored in a contiguous chunk of memory, needed for .view() below)
-        l_mlp4 = l_mlp4.view(batch_size, -1, 4)  # (N, 5776, 4), there are a total 5776 boxes on this feature map
+        #print('THE SHAPE OF THE TRANSFOMS ARE: ' + str(transform_4_feats.shape))
+        #l_mlp4 = self.loc_mlp4(transform_4_feats)  # (N, 16, 38, 38)
+        #print('THE SHAPE OF THE TRANSFOMS ARE: ' + str(l_mlp4.shape))
+        #l_mlp4 = l_mlp4.permute(0, 2, 3, 1).contiguous()  # (N, 38, 38, 16), to match prior-box order (after .view())
+        ## (.contiguous() ensures it is stored in a contiguous chunk of memory, needed for .view() below)
+        #l_mlp4 = l_mlp4.view(batch_size, -1, 4)  # (N, 5776, 4), there are a total 5776 boxes on this feature map
 
+        print('THE SHAPE OF THE TRANSFOMS ARE: ' + str(transform_5_feats.shape))
         l_mlp5 = self.loc_mlp5(transform_5_feats)  # (N, 24, 19, 19)
         print('THE SHAPE OF THE TRANSFOMS ARE: ' + str(l_mlp5.shape))
         l_mlp5 = l_mlp5.permute(0, 2, 3, 1).contiguous()  # (N, 19, 19, 24)
@@ -298,59 +305,94 @@ class PredictionModel(nn.Module):
         l_mlp7 = l_mlp7.permute(0, 2, 3, 1).contiguous()  # (N, 5, 5, 24)
         l_mlp7 = l_mlp7.view(batch_size, -1, 4)  # (N, 150, 4)
 
+        # score predictions
+        sc_mlp5 = self.cl_mlp5(transform_5_feats)  # (N, 6 * n_classes, 19, 19)
+        sc_mlp5 = sc_mlp5.permute(0, 2, 3, 1).contiguous()  # (N, 19, 19, 6 * n_classes)
+        sc_mlp5 = sc_mlp5.view(batch_size, -1, self.n_classes)  # (N, 2166, n_classes), there are a total 2116 boxes on this feature map
+
+        sc_mlp6 = self.cl_mlp6(transform_6_feats)  # (N, 6 * n_classes, 10, 10)
+        sc_mlp6 = sc_mlp6.permute(0, 2, 3, 1).contiguous()  # (N, 10, 10, 6 * n_classes)
+        sc_mlp6 = sc_mlp6.view(batch_size, -1, 1)  # (N, 600, n_classes)
+
+        sc_mlp7 = self.cl_mlp7(transform_7_feats)  # (N, 6 * n_classes, 5, 5)
+        sc_mlp7 = sc_mlp7.permute(0, 2, 3, 1).contiguous()  # (N, 5, 5, 6 * n_classes)
+        sc_mlp7 = sc_mlp7.view(batch_size, -1, 1)  # (N, 150, n_classes)
 
 
-
-
-        # Predict classes in localization boxes
-        c_mlp4 = self.cl_mlp4(transform_4_feats)  # (N, 4 * n_classes, 38, 38)
-        c_mlp4 = c_mlp4.permute(0, 2, 3, 1).contiguous()  # (N, 38, 38, 4 * n_classes), to match prior-box order (after .view())
-        c_mlp4 = c_mlp4.view(batch_size, -1, self.n_classes)  # (N, 5776, n_classes), there are a total 5776 boxes on this feature map
-
-        c_mlp5 = self.cl_mlp5(transform_5_feats)  # (N, 6 * n_classes, 19, 19)
-        c_mlp5 = c_mlp5.permute(0, 2, 3, 1).contiguous()  # (N, 19, 19, 6 * n_classes)
-        c_mlp5 = c_mlp5.view(batch_size, -1, self.n_classes)  # (N, 2166, n_classes), there are a total 2116 boxes on this feature map
-
-        c_mlp6 = self.cl_mlp6(transform_6_feats)  # (N, 6 * n_classes, 10, 10)
-        c_mlp6 = c_mlp6.permute(0, 2, 3, 1).contiguous()  # (N, 10, 10, 6 * n_classes)
-        c_mlp6 = c_mlp6.view(batch_size, -1, self.n_classes)  # (N, 600, n_classes)
-
-        c_mlp7 = self.cl_mlp7(transform_7_feats)  # (N, 6 * n_classes, 5, 5)
-        c_mlp7 = c_mlp7.permute(0, 2, 3, 1).contiguous()  # (N, 5, 5, 6 * n_classes)
-        c_mlp7 = c_mlp7.view(batch_size, -1, self.n_classes)  # (N, 150, n_classes)
 
 
         # A total of 8732 boxes
         # Concatenate in this specific order (i.e. must match the order of the prior-boxes)
-        locs = torch.cat([l_mlp4, l_mlp5, l_mlp6, l_mlp7], dim=1)  # (N, 8732, 4)
-        classes_scores = torch.cat([c_mlp4, c_mlp5, c_mlp6, c_mlp7], dim=1)  # (N, 8732, n_classes)
+        locs = torch.cat([l_mlp5, l_mlp6, l_mlp7], dim=1)  # (N, 8732, 4)
+        scores = torch.cat([sc_mlp5, sc_mlp6, sc_mlp7], dim=1)  # (N, 8732, n_classes)
 
-        return locs, classes_scores
+        return locs, scores
 
 
 
 ################################ LOSS MODEL #####################################################
-# loss for box and class
+# loss for box and class (FROM THE TUTORIAL)
 class BoxLoss(nn.Module):
-    def __init__(self, priors_cxcy, threshold=0.5, neg_pos_ratio=3, alpha=1.):
+    def __init__(self, prior_boxes, threshold=0.5, neg_pos_ratio=3, alpha=1.):
         super().__init__()
-        self.priors_cxcy = priors_cxcy
-        self.priors_xy = cxcy_to_xy(priors_cxcy)
+        self.prior_boxes = prior_boxes
         self.threshold = threshold
         self.neg_pos_ratio = neg_pos_ratio
         self.alpha = alpha
 
         self.smooth_l1 = nn.L1Loss()  # *smooth* L1 loss in the paper; see Remarks section in the tutorial
-        self.cross_entropy = nn.CrossEntropyLoss(reduce=False)
+        
+    def forward(self, predicted_boxes, predicted_scores, boxes, threshold=0.6):
+
+        batch_size = predicted_boxes.size(0)
+        n_priors = self.priors_cxcy.size(0)
+    
+        true_locs = torch.zeros((batch_size, n_priors, 4), dtype=torch.float).to(device)  # (N, 8732, 4)
+        
+        # For each image
+        for i in range(batch_size):
+            n_objects = boxes[i].size(0)
+
+            intersection_vol, iou_3d = find_intersection(boxes[i],
+                                           self.prior_boxes)  # (n_objects, 8732)
+
+            # For each prior, find the object that has the maximum overlap
+            overlap_for_each_prior, object_for_each_prior = iou_3d.max(dim=0)  # (8732)
+
+            # We don't want a situation where an object is not represented in our positive (non-background) priors -
+            # 1. An object might not be the best object for all priors, and is therefore not in object_for_each_prior.
+            # 2. All priors with the object may be assigned as background based on the threshold (0.5).
+
+            # To remedy this -
+            # First, find the prior that has the maximum overlap for each object.
+            overlap_for_each_object, prior_for_each_object = iou_3d.max(dim=1)  # (N_o)
+
+            # Then, assign each object to the corresponding maximum-overlap-prior. (This fixes 1.)
+            object_for_each_prior[prior_for_each_object] = torch.LongTensor(range(n_objects)).to(device)
+
+            # To ensure these priors qualify, artificially give them an overlap of greater than 0.5. (This fixes 2.)
+            overlap_for_each_prior[prior_for_each_object] = 1.
+
+    ###### TODO: idk if this is correct but it is what it is and we will see
+            overlap_for_each_prior[overlap_for_each_prior < threshold] = -1  # Background (no match)
 
 
-    def forward(self, predicted_boxes, predicted_scores, boxes, labels):
+            # Encode center-size object coordinates into the form we regressed predicted boxes to
+    ###### TODO: this might be wrong, check again in testing bc idk what the priors_g function does that would be used here instead
+            true_locs[i] = boxes[i][object_for_each_prior]  # (8732, 4)
 
 
-        box_loss = self.smooth_l1(predicted_boxes[positive_priors], true_locs[positive_priors])
-        cls_loss = self.cross_entropy(predicted_scores.view(-1, nclasses), true_classes.view(-1))
+            
+    
 
-        return cls_loss + self.alpha * box_loss
+        # Localization loss is computed only over positive (non-background) priors
+        loc_loss = self.smooth_l1(predicted_boxes, true_locs)  # (), scalar
+        score_loss = F.cross_entropy(predicted_scores, overlap_for_each_prior)
+        # Note: indexing with a torch.uint8 (byte) tensor flattens the tensor when indexing is across multiple dimensions (N & 8732)
+        # So, if predicted_locs has the shape (N, 8732, 4), predicted_locs[positive_priors] will have (total positives, 4)
+        
+
+        return score_loss + self.alpha * loc_loss
 
 
 
@@ -364,16 +406,15 @@ class WavePrediction(pl.LightningModule):
     The main network - encapsulates the base network and prediction convolutions.
     """
 
-    def __init__(self, nclasses, bins, feat_pos, batch_size, lr_scheduler_milestones, lr_gamma, nfeatures, length, nmeasurement, lr=1e-2, L2_reg=1e-3, top_acc=1, loss=BoxLoss(), accuracy=F1_acc()):
+    def __init__(self, bins, batch_size, lr_scheduler_milestones, lr_gamma, nfeatures, length, nmeasurement, lr=1e-2, L2_reg=1e-3, top_acc=1, accuracy=F1_acc()):
         super().__init__()
 
         self.batch_size = batch_size
-        self.nclasses = nclasses
         self.nfeatures = nfeatures
         self.length = length
         self.nmeasurement = nmeasurement
 
-        self.loss = loss
+        
         self.lr = lr
         self.lr_scheduler_milestones = lr_scheduler_milestones
         self.lr_gamma = lr_gamma
@@ -381,7 +422,6 @@ class WavePrediction(pl.LightningModule):
 
         
         self.bins = bins
-        self.feat_pos = feat_pos
 
         # Log hyperparams (all arguments are logged by default)
         self.save_hyperparameters(
@@ -391,23 +431,20 @@ class WavePrediction(pl.LightningModule):
             'lr',
             'lr_gamma',
             'lr_scheduler_milestones',
-            'batch_size',
-            'nclasses'
+            'batch_size'
         )
 
         # Metrics to log
-        if not top_acc < nclasses:
-            raise ValueError('`top_acc` must be strictly smaller than `nclasses`.')
-        self.train_acc = accuracy()
-        self.val_acc = accuracy()
+        self.train_acc = accuracy
+        self.val_acc = accuracy
 
         
 
         self.base = BaseModel()
-        self.pred_convs = PredictionModel(nclasses)
+        self.pred_convs = PredictionModel()
 
-        # Prior boxes
-        self.priors_cxcy = self.create_prior_boxes()
+        
+
 
     def forward(self, x, pos, batch=None):
         """
@@ -423,15 +460,15 @@ class WavePrediction(pl.LightningModule):
         # Run prediction convolutions (predict offsets w.r.t prior-boxes and classes in each resulting localization box)
         boxes, scores = self.pred_convs(out_x, out_pos, out_batch)
 
-        return boxes, scores
+        return boxes, scores, out_pos
 
 
 
 ##### THE LIGHTNING FUNCTIONS
-    @property
-    def input_size(self):
-        # Add a dummy channel dimension for conv1D layer
-        return (self.batch_size, 1, self.length)
+#    @property
+#    def input_size(self):
+#        # Add a dummy channel dimension for conv1D layer
+#        return (self.batch_size, 1, self.length)
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr, betas=(0.9, 0.999), weight_decay=self.L2_reg)
@@ -446,16 +483,19 @@ class WavePrediction(pl.LightningModule):
         self.logger.log_hyperparams(self.hparams, {'hp/train_acc': 0, 'hp/val_acc': 0})
 
     def training_step(self, batch, batch_idx):
-        x, pos, box = batch['x'], batch['pos'], batch['box']
-        predicted_boxes, predicted_scores = self(x, pos) 
+        x, pos, box, = batch['x'], batch['pos'], batch['box']
+        predicted_boxes, predicted_scores, out_pos = self(x, pos) 
+        # Prior boxes
+        self.priors_boxes = self.create_prior_boxes(out_pos)
+        self.loss = BoxLoss(prior_boxes=self.priors_boxes)
         train_loss = self.loss(predicted_boxes, predicted_scores, box)
 ##### CHANGE PREDICTION TO THE BOXES AND LABELS THAT HAVE BEEN PREDICTED
-        train_acc = self.train_acc(F.softmax(prediction, dim=1), label)
+        train_acc = self.train_acc(predicted_boxes, predicted_scores, box, threshold=0.8)
         
         # Add logs of the batch to tensorboard
         self.log('train_loss', train_loss, on_step=True)
         self.log('train_acc', train_acc, on_step=True)
-        return {'loss': train_loss, 'prediction_boxes': predicted_boxes, 'target_boxes': boxes, 'prediction_labels': predicted_boxes, 'target_labels': boxes}
+        return {'loss': train_loss, 'prediction_boxes': predicted_boxes, 'predicted_scores': predicted_scores, 'target_boxes': box}
 
     # This hook receive the outputs of all training steps as a list of dictionaries
     def training_epoch_end(self, train_outputs):
@@ -469,29 +509,35 @@ class WavePrediction(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         x, pos, box = batch['x'], batch['pos'], batch['box']
-        predicted_boxes, predicted_scores = self(x, pos) 
+        predicted_boxes, predicted_scores, out_pos = self(x, pos) 
+        # Prior boxes
+        self.priors_boxes = self.create_prior_boxes(out_pos)
+        self.loss = BoxLoss(prior_boxes=self.priors_boxes)
         val_loss = self.loss(predicted_boxes, predicted_scores, box)
 ##### CHANGE PREDICTION TO THE BOXES AND LABELS THAT HAVE BEEN PREDICTED
-        val_acc = self.val_acc(F.softmax(prediction, dim=1), label)
+        val_acc = self.val_acc(predicted_boxes, predicted_scores, box, threshold=0.8)
 
         self.log('MeanEpoch/val_acc', val_acc, on_epoch=True, prog_bar=True)
         self.log('hp/val_acc', val_acc)
-        return {'loss': val_loss, 'prediction_boxes': predicted_boxes, 'target_boxes': boxes, 'prediction_labels': predicted_boxes, 'target_labels': boxes}
+        return {'loss': val_loss, 'prediction_boxes': predicted_boxes, 'target_boxes': box, 'prediction_labels': predicted_boxes, 'target_labels': box}
 
     # This hook receive the outputs of all validation steps as a list of dictionaries
     def validation_epoch_end(self, val_outputs):
         mean_loss = torch.stack([x['loss'] for x in val_outputs]).mean()
+        val_acc = self.val_acc.compute()
         # Create a figure of the confmat that is loggable
-        preds = torch.cat([F.softmax(x['preds'], dim=1) for x in val_outputs])
-        target = torch.cat([x['target'] for x in val_outputs])
-        confmat = torchmetrics.functional.confusion_matrix(preds, target, normalize=None, num_classes=self.nclasses)
-        df_confmat = pd.DataFrame(confmat.cpu().numpy(), index = range(self.nclasses), columns = range(self.nclasses))
-        plt.figure(figsize = (10,7))
-        fig_ = sns.heatmap(df_confmat, annot=True, cmap='Blues').get_figure()
-        plt.close(fig_)
+        #preds = torch.cat([F.softmax(x['preds'], dim=1) for x in val_outputs])
+        #target = torch.cat([x['target'] for x in val_outputs])
+        #confmat = torchmetrics.functional.confusion_matrix(preds, target, normalize=None, num_classes=1)
+        #df_confmat = pd.DataFrame(confmat.cpu().numpy(), index = range(1), columns = range(1))
+        #plt.figure(figsize = (10,7))
+        #fig_ = sns.heatmap(df_confmat, annot=True, cmap='Blues').get_figure()
+        #plt.close(fig_)
 
         self.log('MeanEpoch/val_loss', mean_loss)
-        self.logger.experiment.add_figure("Confusion matrix", fig_, self.current_epoch)
+        self.log('MeanEpoch/vaö_acc', val_acc)
+        self.log('hp/val_acc', val_acc)
+        #self.logger.experiment.add_figure("Confusion matrix", fig_, self.current_epoch)
 
     def get_progress_bar_dict(self):
         # don't show the version number
@@ -503,47 +549,51 @@ class WavePrediction(pl.LightningModule):
 
 
 ##### CUSTOM CLASS FUNCTIONS
-    def create_prior_boxes(self):
+    def create_prior_boxes(self, out_pos):
         """
         Create the 8732 prior (default) boxes for the SSD300, as defined in the paper.
+
+        self.bins = self.kmeans_clusters = 
+                        {'width': kmeans_width, 'length': kmeans_length, 
+                        'height': kmeans_height, 'euler_z': kmeans_eulerz, 
+                        'euler_y': kmeans_eulery, 'euler_x': kmeans_eulerx}
+
 
         :return: prior boxes in center-size coordinates, a tensor of dimensions (8732, 4)
         """
 
         # instead of the fmap_dims create a fake grid or try to make a prior for each point that is left over after the tranformations
-        fmap_dims = {'transform_4': self.feat_pos[0],
-                     'transform_5': self.feat_pos[1],
-                     'transform_6': self.feat_pos[2],
-                     'transform_7': self.feat_pos[3]}
-
-        obj_scales = {'transform_4': 0.1,
-                      'transform_5': 0.3,
-                      'transform_6': 0.6,
-                      'transform_7': 0.9}
-
-        aspect_ratios = {'transform_4': [1., 2., 0.5],
-                         'transform_5': [1., 2., 3., 0.5, .333],
-                         'transform_6': [1., 2., 3., 0.5, .333],
-                         'transform_7': [1., 2., 3., 0.5, .333]}
+        fmap_pos = {'transform_5': out_pos[-3],
+                     'transform_6': out_pos[-2],
+                     'transform_7': out_pos[-1]}
         
-        euler_angles = {'transform_4': self.bins[0],
-                        'transform_5': self.bins[1],
-                        'transform_6': self.bins[2],
-                        'transform_7': self.bins[3]}
+        fmap_ratio = {'transform_5': 0.7,
+                     'transform_6': 1,
+                     'transform_7': 1.1}
 
-        fmaps = list(fmap_dims.keys())
+        width = self.bins['width']
+        length = self.bins['length']
+        height = self.bins['height']
+        euler_x = self.bins['euler_x']
+        euler_y = self.bins['euler_y']
+        euler_z = self.bins['euler_z']
+
+        fmaps = list(fmap_pos.keys())
 
         prior_boxes = []
 
         for k, fmap in enumerate(fmaps):
-            for p in fmap_dims[fmap]:
-                cx, cy, cz = p
-
-                for e in euler_angles[fmap]: 
-                    ez, ey, ex = e
-
-                    for ratio in aspect_ratios[fmap]:
-                        prior_boxes.append([obj_scales[fmap] * sqrt(ratio), obj_scales[fmap] / sqrt(ratio), obj_scales[fmap] * sqrt(ratio), cx, cy, cz, ez, ey, ex])
+            for d in fmap_pos[fmap]:
+                cx, cy, cz = d
+                ratio = fmap_ratio[fmap]
+                for w in width:
+                    for l in length:
+                        for h in height:
+                            for ez in euler_z:
+                                for ey in euler_y:
+                                    for ex in euler_x:
+                                        
+                                        prior_boxes.append([w * ratio, l * ratio, h * ratio, cx, cy, cz, ez, ey, ex])
 
 
         prior_boxes = torch.FloatTensor(prior_boxes).to(device)  # (8732, 4)
@@ -551,7 +601,7 @@ class WavePrediction(pl.LightningModule):
 
         return prior_boxes
 
-    def detect_objects(self, predicted_locs, predicted_scores, min_score, max_overlap, top_k):
+    def detect_objects(self, predicted_locs, predicted_scores, top_k=20, max_overlap=0.8, min_score=0.5):
         """
         Decipher the 8732 locations and class scores (output of ths SSD300) to detect objects.
 
@@ -565,95 +615,88 @@ class WavePrediction(pl.LightningModule):
         :return: detections (boxes, labels, and scores), lists of length batch_size
         """
         batch_size = predicted_locs.size(0)
-        n_priors = self.priors_cxcy.size(0)
+        n_priors = self.priors_boxes.size(0)
         predicted_scores = F.softmax(predicted_scores, dim=2)  # (N, 8732, n_classes)
 
-        # Lists to store final predicted boxes, labels, and scores for all images
+        
+        # Lists to store final predicted boxes for all clouds
         all_clouds_boxes = list()
-        all_clouds_labels = list()
-        all_clouds_scores = list()
+        all_cloud_scores = list()
 
         assert n_priors == predicted_locs.size(1) == predicted_scores.size(1)
 
+
+        
+
+
         for i in range(batch_size):
             # Decode object coordinates from the form we regressed predicted boxes to
-
-##### HOW TO DECODE OUR BOXES? ALSO THERE IS A LOG TRANSFORM SOMEWHERE IN THESE HELPER FUNCTIONS, FIND OUT WHAT IT DO BE DOIN
-            decoded_locs = cxcy_to_xy(
-                gcxgcy_to_cxcy(predicted_locs[i], self.priors_cxcy))  # (8732, 4), these are fractional pt. coordinates
-
+            ##### HOW TO DECODE OUR BOXES? ALSO THERE IS A LOG TRANSFORM SOMEWHERE IN THESE HELPER FUNCTIONS, FIND OUT WHAT IT DO BE DOIN
+            decoded_locs = predicted_locs[i]  # (8732, 4), these are fractional pt. coordinates
+            n_locs = decoded_locs.size(0)
             # Lists to store boxes and scores for this image
             cloud_boxes = list()
-            cloud_labels = list()
             cloud_scores = list()
 
-            max_scores, best_label = predicted_scores[i].max(dim=1)  # (8732)
 
-            # Check for each class
-            for c in range(1, self.nclasses):
-                # Keep only predicted boxes and scores where scores for this class are above the minimum score
-                class_scores = predicted_scores[i][:, c]  # (8732)
-                score_above_min_score = class_scores > min_score  # torch.uint8 (byte) tensor, for indexing
-                n_above_min_score = score_above_min_score.sum().item()
-                if n_above_min_score == 0:
+            # filter out not good enough boxes
+            scores = predicted_scores[i]
+            score_above_min_score = scores > min_score  # torch.uint8 (byte) tensor, for indexing
+            n_above_min_score = score_above_min_score.sum().item()
+            if n_above_min_score == 0:
+                continue
+            scores =scores[score_above_min_score]  # (n_qualified), n_min_score <= 8732
+            decoded_locs = decoded_locs[score_above_min_score]  # (n_qualified, 4)
+
+            
+            # Find the overlap between predicted boxes
+            intersection_vol, iou_3d = find_intersection(decoded_locs, decoded_locs)  # (n_qualified, n_min_score)
+
+            # Non-Maximum Suppression (NMS)
+
+            # A torch.uint8 (byte) tensor to keep track of which predicted boxes to suppress
+            # 1 implies suppress, 0 implies don't suppress
+            suppress = torch.zeros((n_above_min_score), dtype=torch.uint8).to(device)  # (n_qualified)
+
+            # Consider each box in order of decreasing scores
+            for box in range(n_locs):
+                # If this box is already marked for suppression
+                if suppress[box] == 1:
                     continue
-                class_scores = class_scores[score_above_min_score]  # (n_qualified), n_min_score <= 8732
-                class_decoded_locs = decoded_locs[score_above_min_score]  # (n_qualified, 4)
 
-                # Sort predicted boxes and scores by scores
-                class_scores, sort_ind = class_scores.sort(dim=0, descending=True)  # (n_qualified), (n_min_score)
-                class_decoded_locs = class_decoded_locs[sort_ind]  # (n_min_score, 4)
+                # Suppress boxes whose overlaps (with this box) are greater than maximum overlap
+                # Find such boxes and update suppress indices
+                suppress = torch.max(suppress, iou_3d[box] > max_overlap)
+                # The max operation retains previously suppressed boxes, like an 'OR' operation
 
-                # Find the overlap between predicted boxes
-                overlap = find_jaccard_overlap(class_decoded_locs, class_decoded_locs)  # (n_qualified, n_min_score)
+                # Don't suppress this box, even though it has an overlap of 1 with itself
+                suppress[box] = 0
 
-                # Non-Maximum Suppression (NMS)
+            # Store only unsuppressed boxes for this class
+            cloud_boxes.append(decoded_locs[1 - suppress])
+            cloud_scores.append(scores[1 - suppress])
 
-                # A torch.uint8 (byte) tensor to keep track of which predicted boxes to suppress
-                # 1 implies suppress, 0 implies don't suppress
-                suppress = torch.zeros((n_above_min_score), dtype=torch.uint8).to(device)  # (n_qualified)
-
-                # Consider each box in order of decreasing scores
-                for box in range(class_decoded_locs.size(0)):
-                    # If this box is already marked for suppression
-                    if suppress[box] == 1:
-                        continue
-
-                    # Suppress boxes whose overlaps (with this box) are greater than maximum overlap
-                    # Find such boxes and update suppress indices
-                    suppress = torch.max(suppress, overlap[box] > max_overlap)
-                    # The max operation retains previously suppressed boxes, like an 'OR' operation
-
-                    # Don't suppress this box, even though it has an overlap of 1 with itself
-                    suppress[box] = 0
-
-                # Store only unsuppressed boxes for this class
-                cloud_boxes.append(class_decoded_locs[1 - suppress])
-                cloud_labels.append(torch.LongTensor((1 - suppress).sum().item() * [c]).to(device))
-                cloud_scores.append(class_scores[1 - suppress])
 
             # If no object in any class is found, store a placeholder for 'background'
             if len(cloud_boxes) == 0:
                 cloud_boxes.append(torch.FloatTensor([[1., 1., 1., 0., 0., 0., 0., 0., 0.]]).to(device))
-                cloud_labels.append(torch.LongTensor([0]).to(device))
-                cloud_scores.append(torch.FloatTensor([0.]).to(device))
+
 
             # Concatenate into single tensors
             cloud_boxes = torch.cat(cloud_boxes, dim=0)  # (n_objects, 4)
-            cloud_labels = torch.cat(cloud_labels, dim=0)  # (n_objects)
-            cloud_scores = torch.cat(cloud_scores, dim=0)  # (n_objects)
-            n_objects = cloud_scores.size(0)
 
+            n_objects = cloud_scores.size(0)
             # Keep only the top k objects
             if n_objects > top_k:
                 cloud_scores, sort_ind = cloud_scores.sort(dim=0, descending=True)
                 cloud_scores = cloud_scores[:top_k]  # (top_k)
                 cloud_boxes = cloud_boxes[sort_ind][:top_k]  # (top_k, 4)
-                cloud_labels = cloud_labels[sort_ind][:top_k]  # (top_k)
+                
+
 
             # Append to lists that store predicted boxes and scores for all images
             all_clouds_boxes.append(cloud_boxes)
-            all_clouds_labels.append(cloud_labels)
-            all_clouds_scores.append(cloud_scores)
+            all_cloud_scores.append(scores)
 
-        return all_clouds_boxes, all_clouds_labels, all_clouds_scores  # lists of length batch_size
+
+        return all_clouds_boxes, all_cloud_scores  # lists of length batch_size
