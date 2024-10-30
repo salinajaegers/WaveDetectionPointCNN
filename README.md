@@ -3,8 +3,8 @@
 We aim to create a neural network that can reliably identify intercellular signals in cancer epithelium. Instead of using traditional image analysis, we are tyring to reduce the data size by representing the cells in the tissue over time as points in a point cloud. In the cloud, the x- and y-axis are the coordinates of the cell in the original microscopy image and the z-axis represents time. 
 
 
-![Signalling activity of simulated cell collectives](images/erkktr_full.png){: width="50%"}
-![Signalling acitivity waves of simulated cell collectives](images/erkktr_clouds.png){: width="50%"}
+![Signalling activity of simulated cell collectives](images/erkktr_full.png | width=50)
+![Signalling acitivity waves of simulated cell collectives](images/erkktr_clouds.png | width=50)
 
 
 ## Data Creation
