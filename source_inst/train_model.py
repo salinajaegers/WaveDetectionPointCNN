@@ -39,7 +39,7 @@ def make_parser():
     #parser.add_argument('-c', '--nclouds', help='Number of clouds in the data. If None, automatically detects the number of unique values in the cloud column of the dataset. Default: None.', type=int, default=None)
     parser.add_argument('-f', '--nfeatures', help='Number of features of the input representation before classification. Hint: [5-10], increase if model underfits, decrease if model overfits. Default: 10.', type=int, default=10)
     parser.add_argument('-b', '--batch', help='Batch size. Hint: usually a power of 2. Default: 12.', type=int, default=3)
-    parser.add_argument('-r', '--lr', help='Initial learning rate. Default: 0.01', type=float, default=0.1) # originally 0.01
+    parser.add_argument('-r', '--lr', help='Initial learning rate. Default: 0.01', type=float, default=0.01) # originally 0.01
     parser.add_argument('-s', '--schedule', help='Scheduled epochs at which the learning rate will be reduced. If None, will evenly divide the number of epochs into 3. Default: None.', type=int, nargs='+', default=None)
     parser.add_argument('-g', '--gamma', help='Factor by which the learning rate is multiplied at the specified epochs. Default: 0.1.', type=float, default=0.01)
     parser.add_argument('-p', '--penalty', help='L2 penalty weigth. Hint: increase if model overfits. Default: 0.001.', type=float, default=0.001)
@@ -49,7 +49,7 @@ def make_parser():
     # For the trainer
     parser.add_argument('-e', '--nepochs', help='Number of training epochs. Default: 10.', type=int, default=3)
     parser.add_argument('--devices', help='Number of devices to use for training. Default: 7.', type=int, default=10)
-    parser.add_argument('--accelerator', help='To use GPU or CPU. Default: CPU', type=str, default='cpu')
+    parser.add_argument('--accelerator', help='To use GPU or CPU. Default: CPU', type=str, default='gpu')
     
     # Logs and reproducibility
     parser.add_argument('--logdir', help='Path to directory where to store the logs and the models. Default: "./logs/"', type=str, default='./logs/')
@@ -128,6 +128,20 @@ def make_configs(args):
     return config_model, config_data, config_trainer
 
 
+def collate_fn(batch):
+        # Extract node features (x), positions (pos), and labels (y) from the batch
+        x = [sample['x'] for sample in batch]
+        pos = [sample['pos'] for sample in batch]
+        y = [sample['y'] for sample in batch]
+
+        # Optionally, you might need to pad or concatenate the features depending on the shapes.
+        # Concatenate along the first dimension (batch) if they have the same size across samples.
+        batch_x = torch.cat(x, dim=0)
+        batch_pos = torch.cat(pos, dim=0)
+        batch_y = torch.cat(y, dim=0)
+
+        return {'x': batch_x, 'pos': batch_pos, 'y': batch_y}
+
 def load_data(args):
     ### LOADING THE DATA
     # custom load
@@ -143,8 +157,6 @@ def load_data(args):
     data.split_data()
 
 
-
-
     # load the graph sets
     data_train = CloudDatasetSeg(dataset=pd.DataFrame(data.train_set), method=args.method, norm_per_meas=args.norm_per_meas)
     data_validation = CloudDatasetSeg(dataset=pd.DataFrame(data.validation_set), method=args.method, norm_per_meas=args.norm_per_meas)
@@ -156,12 +168,14 @@ def load_data(args):
         raise ValueError('Batch size ({}) must be smaller than the number of clouds in the training ({}) and the validation ({}) sets.'.format(args.batch, len(data_train), len(data_validation)))
 
 
+
     # torch dataloader setup
     train_loader = DataLoader(
         dataset=data_train,
         batch_size=args.batch,
         shuffle=True,
-        num_workers=args.devices
+        num_workers=args.devices,
+        collate_fn=collate_fn
         #drop_last=True
     )
 
@@ -169,7 +183,8 @@ def load_data(args):
         dataset=data_validation,
         batch_size=args.batch,
         shuffle=False,
-        num_workers=args.devices
+        num_workers=args.devices,
+        collate_fn=collate_fn
         #drop_last=True
     )
 

@@ -18,10 +18,12 @@ class F1MetricAccumulator():
         self.n_false_negatives = 0
         self.n_true_negatives = 0
         self.n_samples = 0
+        self.sigmoid = torch.nn.Sigmoid()
 
     def update(self, pred_cls, pred_inst, inst):
         # Ensure inputs are on the correct device
         pred_cls = pred_cls.to(device)
+        pred_cls = self.sigmoid(pred_cls)
         pred_inst = pred_inst.to(device)
         inst = inst.to(device)
 
@@ -37,11 +39,12 @@ class F1MetricAccumulator():
         true_negatives = torch.zeros(n_points, dtype=torch.float).to(device)
 
         # True Positives
-        print('THE RANGE OF THE CLASSES PREDICTIONN')
+        print('THE RANGE OF THE CLASSSSESSS PREDICTIONN')
         print(torch.max(pred_cls))
         print(torch.min(pred_cls))
-        print('SUM OF THE -1 INSTANCES ')
+        print('SUM OF THE -1 INSTANCES BC GOOOOD WTF')
         print(torch.sum((inst != -1)))
+        print(torch.sum((inst == -1)))
 
         true_positives[(pred_cls >= self.threshold) & (inst != -1)] = 1
 
@@ -77,7 +80,7 @@ class F1MetricAccumulator():
 
         # F1 Score
         f1_score = (precision * recall) / ((precision + recall) / 2 + 1e-10)
-        print('F1 UPDATA')
+        print('COMPUTTTTTTE')
         print(f1_score)
         return f1_score 
 
@@ -91,15 +94,89 @@ class F1MetricAccumulator():
 
         # F1 Score
         f1_score = (precision * recall) / ((precision + recall) / 2 + 1e-10)
-        print('F1 COMPUTE')
+        print('COMPUTTTTTTE')
         print(f1_score)
         return f1_score
 
 
-#TP + TN
-#/
-#P + N
 
+class AccuracyAccumulator():
+    def __init__(self, threshold=0.5):
+        self.threshold = threshold
+        self.n_true_positives = 0
+        self.n_positives = 0
+        self.n_negatives = 0
+        self.n_true_negatives = 0
+        self.n_samples = 0
+
+    def update(self, pred_cls, pred_inst, inst):
+        # Ensure inputs are on the correct device
+        pred_cls = pred_cls.to(device)
+        pred_inst = pred_inst.to(device)
+        inst = inst.to(device)
+
+        # Check sizes match
+        assert pred_inst.size(0) == inst.size(0) == pred_cls.size(0)
+
+        n_points = inst.size(0)
+
+        # Initialize true positives and false positives
+        true_positives = torch.zeros(n_points, dtype=torch.float).to(device)
+        positives = torch.zeros(n_points, dtype=torch.float).to(device)
+        negatives = torch.zeros(n_points, dtype=torch.float).to(device)
+        true_negatives = torch.zeros(n_points, dtype=torch.float).to(device)
+
+        # True Positives
+        print('THE RANGE OF THE CLASSSSESSS PREDICTIONN')
+        print(torch.max(pred_cls))
+        print(torch.min(pred_cls))
+        print('SUM OF THE -1 INSTANCES BC GOOOOD WTF')
+        print(torch.sum((inst != -1)))
+        print(torch.sum((inst == -1)))
+
+        true_positives[(pred_cls > self.threshold) & (inst != -1)] = 1
+
+        # False Positives
+        positives[(pred_cls > self.threshold)] = 1
+
+        # False Negatives
+        negatives[(pred_cls <= self.threshold)] = 1
+
+        true_negatives[(pred_cls <= self.threshold) & (inst == -1)] = 1
+
+
+
+        print('TRUE AND FALSE NEGATIVES')
+        print(torch.sum(true_positives).item())
+        print(torch.sum(positives).item())
+        print(torch.sum(negatives).item())
+        print(torch.sum(true_negatives).item())
+        # Update counters
+        current_tp = torch.sum(true_positives).item()
+        current_p = torch.sum(positives).item()
+        current_n = torch.sum(negatives).item()
+        current_tn = torch.sum(true_negatives).item()
+        self.n_true_positives += current_tp
+        self.n_positives += current_p
+        self.n_negatives += current_n
+        self.n_true_negatives += current_tn
+        
+
+        # Accuracy Score
+        #TP + TN / P + N
+        accuracy_score = (current_tp + current_tn) / (current_p + current_n + 1e-10)
+        print('UPDATA ACC')
+        print(accuracy_score)
+        return accuracy_score 
+
+    def compute(self):
+        # Accuracy Score
+        #TP + TN / P + N
+        accuracy_score = (self.n_true_positives + self.n_true_negatives) / (self.n_positives + self.n_negatives + 1e-10)
+
+        print('COMPUTE ACCC')
+        print(accuracy_score)
+        return accuracy_score
 
 def even_intervals(nepochs, ninterval=1):
     """Divide a number of epochs into regular intervals."""

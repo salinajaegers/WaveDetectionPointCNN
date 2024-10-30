@@ -49,7 +49,7 @@ class DataProcesserSeg:
             self.detect_groups()
         
         
-        #self.split_data(ftrain, fvalidate, ftest)
+        
             
         
 
@@ -85,13 +85,14 @@ class DataProcesserSeg:
         return None
     
 
-    def split_data(self, ftrain=.65, fvalidate=.25, ftest=.10):
+    def split_data(self, ftrain=.6, fvalidate=.3, ftest=.1):
         """ 
         Split the dataset into train, validation, and test set based on the fractions
 
         :return: 3 pandas, one for each set
         """
-        assert ftrain + fvalidate + ftest == 1, 'The set split does not add to 100%.'
+        
+        assert ftrain + fvalidate + ftest > 1-1e-4 and ftrain + fvalidate + ftest < 1+1e-4, 'The set split does not add to 100%. It sums up to: ' + str(ftrain + fvalidate + ftest)
 
         random.shuffle(self.nclouds)
         train_last = int((len(self.nclouds)+1)*ftrain)
@@ -153,6 +154,8 @@ class DataProcesserSeg:
     def detect_groups(self):
         colnames = list(self.dataset.columns.values)
         colnames.remove(self.col_cloud)
+        colnames.remove(self.col_wave)
+
         for c in self.col_coor:
             colnames.remove(c)
         groups = list(OrderedDict.fromkeys([i for i in colnames]))
@@ -227,7 +230,6 @@ class CloudDatasetSeg():
         return len(self.nclouds)
 
     def __getitem__(self, i):
-        # Read image
         
         cloud = self.dataset[self.dataset[self.col_cloud] == self.nclouds[i]]
         print(self.nclouds[i])
@@ -253,10 +255,14 @@ class CloudDatasetSeg():
         #cloud, box = transform(cloud, box, axis=2, p=0.5)
 
         return {'x': cloud.x, 'pos': cloud.pos, 'y': cloud.y}
+
+    
     
     def detect_groups(self):
         colnames = list(self.dataset.columns.values)
         colnames.remove(self.col_cloud)
+        colnames.remove(self.col_wave)
+
         for c in self.col_coor:
             colnames.remove(c)
         groups = list(OrderedDict.fromkeys([i for i in colnames]))

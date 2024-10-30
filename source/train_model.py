@@ -14,26 +14,21 @@ import matplotlib
 matplotlib.use('Agg')
 
 import pytorch_lightning as pl
-from torchrl.record import CSVLogger
-import torch.nn.functional as F
-import torch_geometric as tg
+
 import torch.optim
 import torch
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
-#from torch_geometric.loader import DataLoader
-from torchsampler import ImbalancedDatasetSampler
-from torchvision import transforms
+
 from torch.utils.data import DataLoader
 
 
 # import custom libraries
 path_to_module = './source'  # Path where all the .py files are, relative to the notebook folder
 sys.path.append(path_to_module)
-from models import WavePrediction, MultiBoxLoss
-from class_dataset import (FixedCrop, RandomCrop, RandomNoise, RandomShift,
-                           Subtract, ToTensor, myDataset)
+from models import WavePrediction
 from data_classes import DataProcesser, CloudDataset
-from train_utils import AverageMeter, accuracy, even_intervals
+from utils import *
+from results_model import *
 
 
 
@@ -140,10 +135,15 @@ def load_data(args):
     # split into train, test, validate
     data.split_data(ftrain=args.ftrain, fvalidate=args.fvalidate, ftest=args.ftest)
 
+
+
+
     # load the graph sets
-    data_train = CloudDataset(dataset=data.train_set, knnradius=args.knnradius).normalize_meas(method=args.method, norm_per_meas=args.norm_per_meas)
-    data_validation = CloudDataset(dataset=data.validation_set, knnradius=args.knnradius).normalize_meas(method=args.method, norm_per_meas=args.norm_per_meas)
+    data_train = CloudDataset(dataset=data.train_set, boxes=data.train_boxes, knnradius=args.knnradius).normalize_meas(method=args.method, norm_per_meas=args.norm_per_meas)
+    data_validation = CloudDataset(dataset=data.validation_set, boxes=data.validation_boxes, knnradius=args.knnradius).normalize_meas(method=args.method, norm_per_meas=args.norm_per_meas)
     
+    #data_train.euler_stats
+    #data_train.dimension_stats
 
     if args.batch > len(data_train) or args.batch > len(data_validation):
         raise ValueError('Batch size ({}) must be smaller than the number of clouds in the training ({}) and the validation ({}) sets.'.format(args.batch, len(data_train), len(data_validation)))
@@ -172,7 +172,8 @@ def load_data(args):
         'validation_loader': validation_loader,
         'measurement': meas_groups,
         'groups': n_groups,
-        'nclouds': nclouds
+        'nclouds': nclouds,
+        'bins': data_train.kmeans_clusters
     }
 
     return out
@@ -183,6 +184,7 @@ def train(config_model, config_trainer, train_loader, validation_loader, file_mo
     """
     Training. Initiate the model and start looping over epochs
     """
+    print('SET MODEL')
     # Set device (cuda or no cuda)
     model = WavePrediction(**config_model)
     
@@ -191,7 +193,7 @@ def train(config_model, config_trainer, train_loader, validation_loader, file_mo
 ###### TODO: NEEDS TO BE DONE DIRECTLY IN PL MODEL
     #criterion = MultiBoxLoss(priors_cxcy=model.priors_cxcy).to(device)
     #optimizer
-
+    print('SET TRAINER')
     # Calculate total number of epochs to train and the epochs to decay learning rate at (i.e. convert iterations to epochs)
     trainer = pl.Trainer(**config_trainer)
     trainer.fit(model, train_loader, validation_loader)
@@ -201,8 +203,10 @@ def main():
     parser = make_parser()
     args = parser.parse_args()
     pl.utilities.seed.seed_everything(args.seed)
+    print('MAKE CONFIC')
     config_model, config_data, config_trainer = make_configs(args)
 
+    print('MAKE LOADER')
     # load the data and its stats
     loaders = load_data(args)
 
@@ -211,7 +215,9 @@ def main():
     measurement = loaders['measurement']
     n_groups = loaders['n_groups']
     nclouds = loaders['nclouds']
+    bins = loaders['bins']
 
+    print('MAKE LOGGER')
     # initialize the loggers
     csv_logger, tb_logger = make_loggers(
         args,
@@ -224,6 +230,7 @@ def main():
     # Update the defaults
     update_model = {}
     update_model['nmeasurement'] = n_groups
+    update_model['bins'] = bins
     if args.schedule is None:
         update_model['lr_scheduler_milestones'] = even_intervals(args.nepochs, ninterval=3)
     config_model.update(update_model)
@@ -236,12 +243,15 @@ def main():
     }
     config_trainer.update(update_trainer)
 
+    print('TRAIN MODEL')
     t0 = time.time()
     train(config_model, config_trainer, train_loader, validation_loader, nmeasurement=n_groups, file_model=file_model)
     t1 = time.time()
     print('Elapsed time: {:.2f} min'.format((t1 - t0)/60))
     print('Model saved at: {}'.format(file_model))
     train()
+
+    #detect(clouds, model, meas_names, top_k=20, max_overlap=0.8, min_score=0.5, batch_size=10)
 
 
 if __name__ == '__main__':

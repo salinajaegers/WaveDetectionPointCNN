@@ -127,6 +127,32 @@ def detect(data, model, meas_names, top_k=20, max_overlap=0.8, min_score=0.5, ba
     return None
 
 
+#def box_fig(box, ax):
+#    if box.size(0) == 1:
+#        box = rotation_to_vertex(box)
+#
+#    assert box.size(0) == 8
+#    assert box.size(1) == 3
+#    
+#    # z1 plane boundary
+#    ax.plot(box[0, 0:2], box[1, 0:2], box[2, 0:2], color='black')
+#    ax.plot(box[0, 1:3], box[1, 1:3], box[2, 1:3], color='black')
+#    ax.plot(box[0, 2:4], box[1, 2:4], box[2, 2:4], color='black')
+#    ax.plot(box[0, [3,0]], box[1, [3,0]], box[2, [3,0]], color='black')
+#
+#    # z2 plane boundary
+#    ax.plot(box[0, 4:6], box[1, 4:6], box[2, 4:6], color='black')
+#    ax.plot(box[0, 5:7], box[1, 5:7], box[2, 5:7], color='black')
+#    ax.plot(box[0, 6:], box[1, 6:], box[2, 6:], color='black')
+#    ax.plot(box[0, [7, 4]], box[1, [7, 4]], box[2, [7, 4]], color='black')
+#
+#    # z1 and z2 connecting boundaries
+#    ax.plot(box[0, [0, 4]], box[1, [0, 4]], box[2, [0, 4]], color='black')
+#    ax.plot(box[0, [1, 5]], box[1, [1, 5]], box[2, [1, 5]], color='black')
+#    ax.plot(box[0, [2, 6]], box[1, [2, 6]], box[2, [2, 6]], color='black')
+#    ax.plot(box[0, [3, 7]], box[1, [3, 7]], box[2, [3, 7]], color='black')
+#
+#    return None
 
 
 

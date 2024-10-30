@@ -21,13 +21,14 @@ from sklearn.cluster import KMeans
 from utils import transform
 
 class DataProcesser:
-    def __init__(self, archive_path, col_cloud='FOV', col_coor=['x_coordinate', 'y_coordinate', 'time_point'], col_box=['x_min', 'y_min', 'time_min', 'x_max', 'y_max', 'time_max'], groups=None, **kwargs):
+    def __init__(self, archive_path, col_cloud='Cloud_id', col_coor=['xcoordinate', 'ycoordinate', 'time_point'], col_box=['width','length','height','center_x','center_y','center_z','euler_z','euler_y','euler_x'], col_wave=['Wave_id'], groups=None, **kwargs):
         
         self.archive_path = archive_path
         self.archive = zipfile.ZipFile(self.archive_path, 'r')
         self.col_cloud = col_cloud
         self.col_coor = col_coor
         self.col_box = col_box
+        self.col_id = col_wave
 
         self.dataset = None
         
@@ -153,9 +154,10 @@ class DataProcesser:
 
     def detect_groups(self):
         colnames = list(self.dataset.columns.values)
-        colnames.remove(self.col_id)
-        colnames.remove(self.col_class)
-        groups = list(OrderedDict.fromkeys([i.split('_')[0] for i in colnames]))
+        colnames.remove(self.col_wave)
+        colnames.remove(self.col_coor)
+        colnames.remove(self.col_cloud)
+        groups = list(OrderedDict.fromkeys([i for i in colnames]))
         self.groups = groups
 
         return None
@@ -182,7 +184,7 @@ class DataProcesser:
 class CloudDataset():
     """Standard dataset object with ID, class"""
 
-    def __init__(self, dataset, boxes, connection_method='knn', radius=2, col_cloud='FOV', col_coor=['x_coordinate', 'y_coordinate', 'time_point'], col_box=['width','length','height','center_x','center_y','center_z','euler_z','euler_y','euler_x'], groups=None, n_clusters=3):
+    def __init__(self, dataset, boxes, connection_method='knn', radius=2, col_cloud='Cloud_id', col_coor=['xcoordinate', 'ycoordinate', 'time_point'], col_box=['width','length','height','center_x','center_y','center_z','euler_z','euler_y','euler_x'], col_wave=['Wave_id'], groups=None, n_clusters=3):
         """
         General Dataset class for arbitrary uni and multivariate point clouds.
         :param data_folder: folder where data files are stored
@@ -196,6 +198,7 @@ class CloudDataset():
         self.col_cloud = col_cloud
         self.col_coor = col_coor
         self.col_box = col_box
+        self.col_wave = col_wave
 
         self.nclouds = pd.unique(self.dataset[self.col_cloud]).tolist()
 
@@ -235,13 +238,15 @@ class CloudDataset():
         # Node positions
         node_positions = torch.tensor(cloud[self.col_coor].values, dtype=torch.float)
 
+        node_labels = torch.tensor(cloud[self.col_wave].values, dtype=torch.float)
+
 ####### TODO: introduce more graph connection methods
         # Convert to point cloud (=localized graph without edges)
         #if self.connection_method == 'KNN':
         #    connect_transform = KNNGraph(k=self.radius)
         #if self.connection_method == 'RADIUS':
         #    connect_transform = RadiusGraph(r=self.radius)
-        cloud = Data(x=node_features, pos=node_positions)
+        cloud = Data(x=node_features, pos=node_positions, y=node_labels)
         #cloud = connect_transform(cloud)
 
         # Read objects in this image (bounding boxes, labels, difficulties)
@@ -253,13 +258,14 @@ class CloudDataset():
 
         
 
-        return {'x': cloud.x, 'pos': cloud.pos,'boxes': boxes}
+        return {'x': cloud.x, 'pos': cloud.pos,'boxes': boxes, 'y': cloud.y}
     
     def detect_groups(self):
         colnames = list(self.dataset.columns.values)
-        colnames.remove(self.col_id)
-        colnames.remove(self.col_class)
-        groups = list(OrderedDict.fromkeys([i.split('_')[0] for i in colnames]))
+        colnames.remove(self.col_wave)
+        colnames.remove(self.col_coor)
+        colnames.remove(self.col_cloud)
+        groups = list(OrderedDict.fromkeys([i for i in colnames]))
         self.groups = groups
 
         return None

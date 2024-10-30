@@ -118,16 +118,33 @@ class SegLoss(nn.Module):
         super().__init__()
 
         #self.l1loss = nn.L1Loss()  # *smooth* L1 loss in the paper; see Remarks section in the tutorial
-        self.clsloss = nn.BCEWithLogitsLoss()
+        #self.sigmoid = torch.nn.Sigmoid()
 
     def forward(self, pred_cls, pred_inst, inst):
 
-        true_classes = torch.ones((pred_cls.size(0)), dtype=torch.float).to(device)  # (N, 8732)
+        n_samples = pred_cls.size(0)
+
+        true_classes = torch.ones((n_samples), dtype=torch.float).to(device)  # (N, 8732)
 
         true_classes[inst == -1] = 0
+
+        # balance the classes by introducing more ones into the true_classes since there are waaay more -1
+        print('THE BALANCING')
+        sum_wave = torch.sum(true_classes)
+        sum_nonewave = n_samples - sum_wave
+
+        balance_wave = sum_nonewave / (sum_wave + 1e-5)
+        balance_nonewave = sum_wave / (sum_nonewave + 1e-5)
+
+        clsloss = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([balance_wave], dtype=torch.float32))
+
+        print('THIS IS HOW MANY CLASSES ARE 1')
+        print(torch.sum(true_classes))
+        print('OUT OF THIS MANY COLLECTIVE POINTS')
+        print(pred_cls.size(0))
  
-        inst_loss = instance_loss(pred_inst, inst, margin=0.5)  # (), scalar
-        score_loss = self.clsloss(pred_cls, true_classes)
+        inst_loss = instance_loss(pred_inst.view(1,-1), inst.view(1,-1), margin=0.5)  # (), scalar
+        score_loss = clsloss(pred_cls, true_classes)
         # Note: indexing with a torch.uint8 (byte) tensor flattens the tensor when indexing is across multiple dimensions (N & 8732)
         # So, if predicted_locs has the shape (N, 8732, 4), predicted_locs[positive_priors] will have (total positives, 4)
         print('THE LOSSSSSSSSSSSSSSSSS')
@@ -157,6 +174,8 @@ class WaveSegmentation(pl.LightningModule):
 
         self.train_acc = F1MetricAccumulator()
         self.val_acc = F1MetricAccumulator()
+        #self.train_acc = AccuracyAccumulator()
+        #self.val_acc = AccuracyAccumulator()
 
         # Log hyperparams (all arguments are logged by default)
         self.save_hyperparameters(
@@ -217,7 +236,7 @@ class WaveSegmentation(pl.LightningModule):
         # class score computation
         self.mlp_output_cls = MLP([dim_model[0], 64, out_channels], norm=None)
         self.mlp_output_inst = MLP([dim_model[0], 64, 1], norm=None)
-        self.sigmoid = torch.nn.Sigmoid()
+        #self.sigmoid = torch.nn.Sigmoid()
 
     def forward(self, x, pos, batch=None):
 
@@ -272,7 +291,8 @@ class WaveSegmentation(pl.LightningModule):
         out_inst = self.mlp_output_inst(x)
 
 
-        return self.sigmoid(out_cls), out_inst
+        #return self.sigmoid(out_cls), out_inst
+        return out_cls, out_inst
     
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr, betas=(0.9, 0.999), weight_decay=self.L2_reg)
@@ -297,15 +317,15 @@ class WaveSegmentation(pl.LightningModule):
         predicted_cls = predicted_cls.view(-1)
         predicted_inst = predicted_inst.view(-1)
         # Prior boxes
-        train_loss = self.loss(predicted_cls, predicted_inst, y)
+        loss = self.loss(predicted_cls, predicted_inst, y)
 ##### CHANGE PREDICTION TO THE BOXES AND LABELS THAT HAVE BEEN PREDICTED
         train_acc = self.train_acc.update(predicted_cls, predicted_inst, y)
         
         # Add logs of the batch to tensorboard
-        self.log('train_loss', train_loss, on_step=True)
+        self.log('train_loss', loss, on_step=True)
         self.log('train_acc', train_acc, on_step=True)
         
-        out = {'loss': train_loss, 'prediction_instances': predicted_inst, 'predicted_scores': predicted_cls, 'target_instances': y}
+        out = {'loss': loss, 'prediction_instances': predicted_inst, 'predicted_scores': predicted_cls, 'target_instances': y}
         self.training_step_outputs.append(out)
         return out
 
@@ -332,15 +352,15 @@ class WaveSegmentation(pl.LightningModule):
         predicted_inst = predicted_inst.view(-1)
         
         # Prior boxes
-        val_loss = self.loss(predicted_cls, predicted_inst, y)
+        loss = self.loss(predicted_cls, predicted_inst, y)
 ##### CHANGE PREDICTION TO THE BOXES AND LABELS THAT HAVE BEEN PREDICTED
         val_acc = self.val_acc.update(predicted_cls, predicted_inst, y)
 
         # Add logs of the batch to tensorboard
-        self.log('MeanEpoch/val_acc', val_acc, on_epoch=True, prog_bar=True)
-        self.log('hp/val_acc', val_acc)
+        self.log('val_loss', loss, on_step=True)
+        self.log('val_acc', val_acc, on_step=True)
 
-        out = {'loss': val_loss, 'prediction_instances': predicted_inst, 'predicted_scores': predicted_cls, 'target_instances': y}
+        out = {'loss': loss, 'prediction_instances': predicted_inst, 'predicted_scores': predicted_cls, 'target_instances': y}
         self.validation_step_outputs.append(out)
         return out
 
