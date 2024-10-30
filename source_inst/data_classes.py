@@ -66,7 +66,7 @@ class DataProcesserSeg:
         
         :return: 2 pandas, one with raw data, one with the box annotations
         """
-        # import the dataset and the boxes
+        # import the dataset
         self.dataset = pd.read_csv(self.archive.open('dataset.csv'))
         
         self.check_datasets()
@@ -142,10 +142,7 @@ class DataProcesserSeg:
         if self.dataset[colnames_dataset].select_dtypes(numerics).empty:
             warnings.warn('No numerical measurement columns in dataset.csv.')
         
-        # check if there are duplicated points
-        #if any(self.dataset[self.col_coor].duplicated()):
-        #    warnings.warn('Found duplicated point in dataset.csv.')
-        # check if there are duplicated boxes
+        
         
         return None
     
