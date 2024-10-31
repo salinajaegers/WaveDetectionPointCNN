@@ -229,7 +229,6 @@ class CloudDatasetSeg():
     def __getitem__(self, i):
         
         cloud = self.dataset[self.dataset[self.col_cloud] == self.nclouds[i]]
-        print(self.nclouds[i])
         ## to graph
         # Node features
         node_features = torch.tensor(cloud[self.groups].values, dtype=torch.float)
@@ -238,19 +237,9 @@ class CloudDatasetSeg():
         # Node labels 
         node_labels = torch.tensor(cloud[self.col_wave].values, dtype=torch.float)
 
-####### TODO: introduce more graph connection methods
         # Convert to point cloud (=localized graph without edges)
-        #if self.connection_method == 'KNN':
-        #    connect_transform = KNNGraph(k=self.radius)
-        #if self.connection_method == 'RADIUS':
-        #    connect_transform = RadiusGraph(r=self.radius)
         cloud = Data(x=node_features, pos=node_positions, y=node_labels)
-        #cloud = connect_transform(cloud)
-
-    
         
-        #cloud, box = transform(cloud, box, axis=2, p=0.5)
-
         return {'x': cloud.x, 'pos': cloud.pos, 'y': cloud.y}
 
     

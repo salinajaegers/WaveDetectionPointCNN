@@ -42,8 +42,6 @@ def detect(data, model, meas_names, top_k=20, max_overlap=0.8, min_score=0.5, ba
     model = model.to(device)
     model = model.float()
 
-    #print(data.shape)
-    print(data)
 
     
     test_loader = DataLoader(dataset=data,
@@ -52,34 +50,16 @@ def detect(data, model, meas_names, top_k=20, max_overlap=0.8, min_score=0.5, ba
                              num_workers=4)
 
 
-    # Lists to store detected and true boxes, labels, scores
-    #det_boxes = list()
-    #det_scores = list()
-
-##### TODO: i hope this is the right output, check in testing
-    #with torch.no_grad():
-    #    predicted_scores, predicted_instances = model(test_loader)
-
-    #print(predicted_scores.shape)
-    #print(predicted_instances.shape)
-
-
+  
     trainer = pl.Trainer()
     predictions = trainer.predict(model, test_loader)
     
-    #print(predicted_scores.shape)
-    #print(predicted_instances.shape)
-    # Detect objects in SSD output
-    #det_boxes, det_scores = model.detect_objects(predicted_locs, predicted_scores, min_score=min_score, max_overlap=max_overlap, top_k=top_k)
-
 
     # Move detections to the CPU
     #det_boxes = det_boxes[0].to('cpu')
     with PdfPages('results.pdf') as pdf:
         for c in range(len(predictions)):
             scores = torch.clone(predictions[c]['predicted_classes'])
-            print(torch.max(scores))
-            print(torch.min(scores))
             instances = torch.clone(predictions[c]['predicted_instances'])
             instances[scores <= 0.5] = 0
 #### TODO: check the clouds input
@@ -127,51 +107,23 @@ def detect(data, model, meas_names, top_k=20, max_overlap=0.8, min_score=0.5, ba
     return None
 
 
-#def box_fig(box, ax):
-#    if box.size(0) == 1:
-#        box = rotation_to_vertex(box)
-#
-#    assert box.size(0) == 8
-#    assert box.size(1) == 3
-#    
-#    # z1 plane boundary
-#    ax.plot(box[0, 0:2], box[1, 0:2], box[2, 0:2], color='black')
-#    ax.plot(box[0, 1:3], box[1, 1:3], box[2, 1:3], color='black')
-#    ax.plot(box[0, 2:4], box[1, 2:4], box[2, 2:4], color='black')
-#    ax.plot(box[0, [3,0]], box[1, [3,0]], box[2, [3,0]], color='black')
-#
-#    # z2 plane boundary
-#    ax.plot(box[0, 4:6], box[1, 4:6], box[2, 4:6], color='black')
-#    ax.plot(box[0, 5:7], box[1, 5:7], box[2, 5:7], color='black')
-#    ax.plot(box[0, 6:], box[1, 6:], box[2, 6:], color='black')
-#    ax.plot(box[0, [7, 4]], box[1, [7, 4]], box[2, [7, 4]], color='black')
-#
-#    # z1 and z2 connecting boundaries
-#    ax.plot(box[0, [0, 4]], box[1, [0, 4]], box[2, [0, 4]], color='black')
-#    ax.plot(box[0, [1, 5]], box[1, [1, 5]], box[2, [1, 5]], color='black')
-#    ax.plot(box[0, [2, 6]], box[1, [2, 6]], box[2, [2, 6]], color='black')
-#    ax.plot(box[0, [3, 7]], box[1, [3, 7]], box[2, [3, 7]], color='black')
-#
-#    return None
 
 
 
 if __name__ == '__main__':
-    data_file = '/mnt/imaging.data/sjaegers/PointCNN/test_data.zip'
-    model_file = '/mnt/imaging.data/sjaegers/PointCNN/source2/logs/test/2024-09-14-08__04__03_test_data.pytorch'
+    data_file = './datatest_data.zip'
+    model_file = './source_inst/logs/test/2024-09-14-08__04__03_test_data.pytorch'
     meas_var = ['erkactivityvalue']
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     n_top_worst = 5
     batch_size = 800
 
     model = torch.load(model_file)
-    #model = WaveSegmentation.load_from_checkpoint("/path/to/checkpoint.ckpt")
-
+    
 
     # Dataloader
     data = DataProcesserSeg(data_file)
     data.split_data()
     data_test = CloudDatasetSeg(dataset=pd.DataFrame(data.test_set))
-    print('HOW MANY TEST CLOUDS')
-    print(len(data_test))
+
     detect(data_test, model, meas_var, top_k=5, max_overlap=0.8, min_score=0.5, batch_size=1)

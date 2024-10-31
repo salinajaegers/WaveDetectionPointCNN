@@ -23,7 +23,7 @@ from torch.utils.data import DataLoader
 
 
 # import custom libraries
-path_to_module = './source2'  # Path where all the .py files are, relative to the notebook folder
+path_to_module = './source_inst'  # Path where all the .py files are, relative to the notebook folder
 sys.path.append(path_to_module)
 from models2 import WaveSegmentation
 from data_classes import DataProcesserSeg, CloudDatasetSeg

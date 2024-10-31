@@ -39,13 +39,6 @@ class F1MetricAccumulator():
         true_negatives = torch.zeros(n_points, dtype=torch.float).to(device)
 
         # True Positives
-        print('THE RANGE OF THE CLASSSSESSS PREDICTIONN')
-        print(torch.max(pred_cls))
-        print(torch.min(pred_cls))
-        print('SUM OF THE -1 INSTANCES BC GOOOOD WTF')
-        print(torch.sum((inst != -1)))
-        print(torch.sum((inst == -1)))
-
         true_positives[(pred_cls >= self.threshold) & (inst != -1)] = 1
 
         # False Positives
@@ -56,11 +49,6 @@ class F1MetricAccumulator():
 
         true_negatives[(pred_cls <= self.threshold) & (inst == -1)] = 1
 
-        print('TRUE AND FALSE NEGATIVES')
-        print(torch.sum(true_positives).item())
-        print(torch.sum(false_positives).item())
-        print(torch.sum(false_negatives).item())
-        print(torch.sum(true_negatives).item())
         # Update counters
         current_tp = torch.sum(true_positives).item()
         current_fp = torch.sum(false_positives).item()
@@ -80,8 +68,7 @@ class F1MetricAccumulator():
 
         # F1 Score
         f1_score = (precision * recall) / ((precision + recall) / 2 + 1e-10)
-        print('COMPUTTTTTTE')
-        print(f1_score)
+
         return f1_score 
 
     def compute(self):
@@ -94,8 +81,7 @@ class F1MetricAccumulator():
 
         # F1 Score
         f1_score = (precision * recall) / ((precision + recall) / 2 + 1e-10)
-        print('COMPUTTTTTTE')
-        print(f1_score)
+
         return f1_score
 
 
@@ -127,13 +113,6 @@ class AccuracyAccumulator():
         true_negatives = torch.zeros(n_points, dtype=torch.float).to(device)
 
         # True Positives
-        print('THE RANGE OF THE CLASSSSESSS PREDICTIONN')
-        print(torch.max(pred_cls))
-        print(torch.min(pred_cls))
-        print('SUM OF THE -1 INSTANCES BC GOOOOD WTF')
-        print(torch.sum((inst != -1)))
-        print(torch.sum((inst == -1)))
-
         true_positives[(pred_cls > self.threshold) & (inst != -1)] = 1
 
         # False Positives
@@ -145,12 +124,6 @@ class AccuracyAccumulator():
         true_negatives[(pred_cls <= self.threshold) & (inst == -1)] = 1
 
 
-
-        print('TRUE AND FALSE NEGATIVES')
-        print(torch.sum(true_positives).item())
-        print(torch.sum(positives).item())
-        print(torch.sum(negatives).item())
-        print(torch.sum(true_negatives).item())
         # Update counters
         current_tp = torch.sum(true_positives).item()
         current_p = torch.sum(positives).item()
@@ -165,8 +138,7 @@ class AccuracyAccumulator():
         # Accuracy Score
         #TP + TN / P + N
         accuracy_score = (current_tp + current_tn) / (current_p + current_n + 1e-10)
-        print('UPDATA ACC')
-        print(accuracy_score)
+
         return accuracy_score 
 
     def compute(self):
@@ -174,8 +146,6 @@ class AccuracyAccumulator():
         #TP + TN / P + N
         accuracy_score = (self.n_true_positives + self.n_true_negatives) / (self.n_positives + self.n_negatives + 1e-10)
 
-        print('COMPUTE ACCC')
-        print(accuracy_score)
         return accuracy_score
 
 def even_intervals(nepochs, ninterval=1):

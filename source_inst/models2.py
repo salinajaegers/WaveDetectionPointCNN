@@ -25,7 +25,7 @@ from torch_geometric.utils import scatter
 import torch.nn as nn
 import sys
 
-path_to_module = './source2'  # Path where all the .py files are, relative to the notebook folder
+path_to_module = './source_inst'  # Path where all the .py files are, relative to the notebook folder
 sys.path.append(path_to_module)
 from utils import *
 
@@ -129,7 +129,6 @@ class SegLoss(nn.Module):
         true_classes[inst == -1] = 0
 
         # balance the classes by introducing more ones into the true_classes since there are waaay more -1
-        print('THE BALANCING')
         sum_wave = torch.sum(true_classes)
         sum_nonewave = n_samples - sum_wave
 
@@ -138,18 +137,12 @@ class SegLoss(nn.Module):
 
         clsloss = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([balance_wave], dtype=torch.float32))
 
-        print('THIS IS HOW MANY CLASSES ARE 1')
-        print(torch.sum(true_classes))
-        print('OUT OF THIS MANY COLLECTIVE POINTS')
-        print(pred_cls.size(0))
  
         inst_loss = instance_loss(pred_inst.view(1,-1), inst.view(1,-1), margin=0.5)  # (), scalar
         score_loss = clsloss(pred_cls, true_classes)
         # Note: indexing with a torch.uint8 (byte) tensor flattens the tensor when indexing is across multiple dimensions (N & 8732)
         # So, if predicted_locs has the shape (N, 8732, 4), predicted_locs[positive_priors] will have (total positives, 4)
-        print('THE LOSSSSSSSSSSSSSSSSS')
-        print(inst_loss)
-        print(score_loss)
+
         return 0.5*score_loss + 0.5*inst_loss
     
 
@@ -334,8 +327,6 @@ class WaveSegmentation(pl.LightningModule):
     def on_train_epoch_end(self):
         mean_loss = torch.stack([k['loss'] for k in self.training_step_outputs]).mean()
         train_acc = self.train_acc.compute()
-        print('THE TRAINING ACCURACYYYYYYYYYY')
-        print(train_acc)
         
         self.log('MeanEpoch/train_loss', mean_loss)
         # The .compute() of Torchmetrics objects compute the average of the epoch and reset for next one
@@ -368,8 +359,6 @@ class WaveSegmentation(pl.LightningModule):
     def on_validation_epoch_end(self):
         mean_loss = torch.stack([x['loss'] for x in self.validation_step_outputs]).mean()
         val_acc = self.val_acc.compute()
-        print('THE VALIDATION ACCCCCCCCCCCCCCC')
-        print(val_acc)
 
         self.log('MeanEpoch/val_loss', mean_loss)
         self.log('MeanEpoch/val_acc', val_acc)
