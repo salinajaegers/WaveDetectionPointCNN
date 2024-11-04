@@ -124,6 +124,9 @@ def make_configs(args):
     config_trainer['min_epochs'] = dargs['nepochs']
     config_trainer['devices'] = dargs['devices']
     config_trainer['accelerator'] = dargs['accelerator']
+    # THIS IS TO ENSURE THE SCRIPT ISNT RESTARTED EVERY EPOCH, BUT IT MAKES THE WHOLE PROCESS SLOWER
+    # TODO: IF SOMEONE KNOWS HOW TO OPTIMIZE THIS, PLS DO
+    config_trainer['strategy'] = 'ddp_spawn'
 
     return config_model, config_data, config_trainer
 
