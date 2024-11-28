@@ -1,3 +1,15 @@
+########################################################################
+#THIS MODEL IS BASED ON THE POINT TRANSFORMER IMPLEMENTATION OF PYTORCH GEOMETRIC
+#authors: "Fey Matthias; Lenssen, Jan Eric"
+#date-released: 2019-05-06
+#url: "https://github.com/pyg-team/pytorch_geometric"
+
+#THE ORIGINAL POINT TRANSFORMER PAPER CAN BE FOUND HERE
+#https://arxiv.org/pdf/2012.09164
+#Zhao, Hengshuang, et al. "Point transformer." 
+#Proceedings of the IEEE/CVF international conference on computer vision. 2021.
+########################################################################
+
 import os.path as osp
 
 import torch
